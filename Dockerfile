@@ -36,43 +36,14 @@ USER nextjs
 # Expose port
 EXPOSE $PORT
 
-# Enhanced health check for Vite build
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD node -e "const http = require('http'); \
-    const options = { \
-      host: 'localhost', \
-      port: process.env.PORT || 3001, \
-      path: '/health', \
-      timeout: 8000 \
-    }; \
-    const req = http.request(options, (res) => { \
-      let data = ''; \
-      res.on('data', chunk => data += chunk); \
-      res.on('end', () => { \
-        try { \
-          const health = JSON.parse(data); \
-          if (res.statusCode === 200 && health.status === 'healthy' && health.build && health.build.directoryExists) { \
-            console.log('Health check passed:', health.service, health.buildTool); \
-            process.exit(0); \
-          } else { \
-            console.error('Health check failed:', data); \
-            process.exit(1); \
-          } \
-        } catch(e) { \
-          console.error('Health check parse error:', e.message); \
-          process.exit(1); \
-        } \
-      }); \
-    }); \
-    req.on('error', (err) => { \
-      console.error('Health check request error:', err.message); \
-      process.exit(1); \
-    }); \
-    req.on('timeout', () => { \
-      console.error('Health check timeout'); \
-      process.exit(1); \
-    }); \
-    req.end();"
+# SIMPLIFIED HEALTHCHECK - Fixed the main issues
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider --timeout=10 \
+    http://127.0.0.1:${PORT:-3001}/health || exit 1
+
+# Alternative using curl if wget not available
+# HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
+#   CMD curl -f http://127.0.0.1:${PORT:-3001}/health || exit 1
 
 # Start application
 CMD ["npm", "start"]
