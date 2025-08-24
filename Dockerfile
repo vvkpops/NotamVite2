@@ -20,7 +20,11 @@ COPY . .
 # Build the React application with Vite
 RUN npm run build
 
-# Remove dev dependencies after build
+# Verify build was successful
+RUN ls -la dist/ && \
+    test -f dist/index.html || (echo "Build failed: index.html not found" && exit 1)
+
+# Remove dev dependencies after build to reduce image size
 RUN npm prune --production
 
 # Change ownership
@@ -32,20 +36,42 @@ USER nextjs
 # Expose port
 EXPOSE $PORT
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# Enhanced health check for Vite build
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
   CMD node -e "const http = require('http'); \
     const options = { \
       host: 'localhost', \
       port: process.env.PORT || 3001, \
       path: '/health', \
-      timeout: 5000 \
+      timeout: 8000 \
     }; \
     const req = http.request(options, (res) => { \
-      if (res.statusCode === 200) process.exit(0); \
-      else process.exit(1); \
+      let data = ''; \
+      res.on('data', chunk => data += chunk); \
+      res.on('end', () => { \
+        try { \
+          const health = JSON.parse(data); \
+          if (res.statusCode === 200 && health.status === 'healthy' && health.build && health.build.directoryExists) { \
+            console.log('Health check passed:', health.service, health.buildTool); \
+            process.exit(0); \
+          } else { \
+            console.error('Health check failed:', data); \
+            process.exit(1); \
+          } \
+        } catch(e) { \
+          console.error('Health check parse error:', e.message); \
+          process.exit(1); \
+        } \
+      }); \
     }); \
-    req.on('error', () => process.exit(1)); \
+    req.on('error', (err) => { \
+      console.error('Health check request error:', err.message); \
+      process.exit(1); \
+    }); \
+    req.on('timeout', () => { \
+      console.error('Health check timeout'); \
+      process.exit(1); \
+    }); \
     req.end();"
 
 # Start application
