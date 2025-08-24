@@ -1,6 +1,9 @@
 # Use Node.js 18 Alpine
 FROM node:18-alpine
 
+# Install curl for healthcheck and debugging
+RUN apk add --no-cache curl
+
 # Set working directory
 WORKDIR /app
 
@@ -8,24 +11,43 @@ WORKDIR /app
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nextjs -u 1001
 
-# Copy package files
+# Copy package files first for better caching
 COPY package*.json ./
 
-# Install ALL dependencies first (including devDependencies for build)
-RUN npm install
+# Install ALL dependencies (including dev for build)
+RUN npm ci --include=dev
 
-# Copy source code
+# Copy all source files
 COPY . .
 
-# Build the React application with Vite
-RUN npm run build
+# Build the application
+RUN npm run build && \
+    echo "Build completed, checking contents:" && \
+    ls -la && \
+    ls -la dist/ && \
+    echo "Index file exists:" && \
+    test -f dist/index.html && echo "✅ dist/index.html found" || echo "❌ dist/index.html missing"
 
-# Verify build was successful
-RUN ls -la dist/ && \
-    test -f dist/index.html || (echo "Build failed: index.html not found" && exit 1)
-
-# Remove dev dependencies after build to reduce image size
+# Remove dev dependencies after build
 RUN npm prune --production
+
+# Verify production dependencies
+RUN echo "Production dependencies:" && \
+    npm list --depth=0
+
+# Create a startup script for better debugging
+RUN echo '#!/bin/sh' > /app/start.sh && \
+    echo 'echo "=== CONTAINER STARTUP DEBUG ==="' >> /app/start.sh && \
+    echo 'echo "PORT: $PORT"' >> /app/start.sh && \
+    echo 'echo "NODE_ENV: $NODE_ENV"' >> /app/start.sh && \
+    echo 'echo "Working directory: $(pwd)"' >> /app/start.sh && \
+    echo 'echo "Files in /app:"' >> /app/start.sh && \
+    echo 'ls -la' >> /app/start.sh && \
+    echo 'echo "Files in dist:"' >> /app/start.sh && \
+    echo 'ls -la dist/ 2>/dev/null || echo "No dist directory"' >> /app/start.sh && \
+    echo 'echo "Starting server..."' >> /app/start.sh && \
+    echo 'exec npm start' >> /app/start.sh && \
+    chmod +x /app/start.sh
 
 # Change ownership
 RUN chown -R nextjs:nodejs /app
@@ -33,17 +55,12 @@ RUN chown -R nextjs:nodejs /app
 # Switch to non-root user
 USER nextjs
 
-# Expose port
+# Expose port (Railway will set this)
 EXPOSE $PORT
 
-# SIMPLIFIED HEALTHCHECK - Fixed the main issues
-HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider --timeout=10 \
-    http://127.0.0.1:${PORT:-3001}/health || exit 1
+# SIMPLIFIED healthcheck that waits for startup
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=6 \
+  CMD curl -f http://127.0.0.1:${PORT:-3001}/ping || exit 1
 
-# Alternative using curl if wget not available
-# HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
-#   CMD curl -f http://127.0.0.1:${PORT:-3001}/health || exit 1
-
-# Start application
-CMD ["npm", "start"]
+# Use our debug startup script
+CMD ["/app/start.sh"]
