@@ -23,10 +23,10 @@
   "scripts": {
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "client": "vite",
-    "server": "nodemon server.js",
+    "server": "nodemon server.cjs",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.js"
+    "start": "node server.cjs"
   },
   "engines": {
     "node": ">=16.0.0",
