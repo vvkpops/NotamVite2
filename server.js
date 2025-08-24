@@ -1,4 +1,4 @@
-// server.js
+// server.js - Complete Updated Version for Vite
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
@@ -20,14 +20,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS configuration for Railway
+// Enhanced CORS configuration for Vite
 app.use((req, res, next) => {
   const allowedOrigins = [
     'https://*.railway.app',
     'https://*.up.railway.app',
     'http://localhost:3000',
     'http://localhost:3001',
-    'http://localhost:5173' // Vite dev server default port
+    'http://localhost:5173', // Vite dev server
+    'http://localhost:4173'  // Vite preview server
   ];
   
   const origin = req.headers.origin;
@@ -79,25 +80,59 @@ try {
   
 } catch (err) {
   console.error("❌ ERROR LOADING CREDENTIALS:", err.message);
-  console.error("📝 Please set FAA_CLIENT_ID and FAA_CLIENT_SECRET environment variables in Railway");
+  console.error("📝 Please set FAA_CLIENT_ID and FAA_CLIENT_SECRET environment variables");
   console.error("   Or ensure config.json exists with faa_client_id and faa_client_secret");
   process.exit(1);
 }
 
-// Serve static files from Vite build (dist folder)
+// Serve static files from Vite build (dist folder) with enhanced error handling
 const buildPath = path.join(__dirname, 'dist');
+console.log('🔍 Checking for build directory:', buildPath);
+
 if (fs.existsSync(buildPath)) {
+  console.log('✅ Build directory found, serving static files from:', buildPath);
   app.use(express.static(buildPath, {
     maxAge: '1y',
     etag: true,
     lastModified: true
   }));
 } else {
-  console.warn('⚠️  Vite build directory not found. Run "npm run build" first.');
+  console.warn('⚠️  Vite build directory not found at:', buildPath);
+  console.warn('📝 Make sure to run "npm run build" first');
+  
+  // Create a simple fallback response for root route
+  app.get('/', (req, res) => {
+    res.status(503).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>NOTAM Dashboard V2 - Build Required</title>
+        <style>
+          body { font-family: Inter, sans-serif; margin: 40px; background: #0f172a; color: #e2e8f0; }
+          .container { max-width: 600px; margin: 0 auto; padding: 40px; background: rgba(30, 41, 59, 0.6); border-radius: 12px; }
+          h1 { color: #fbbf24; }
+          code { background: #374151; padding: 4px 8px; border-radius: 4px; font-family: monospace; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>⚠️ Build Not Found</h1>
+          <p>The NOTAM Dashboard application hasn't been built yet.</p>
+          <p>Run <code>npm run build</code> to create the production build.</p>
+          <p><strong>Expected build directory:</strong> <code>${buildPath}</code></p>
+          <p><strong>Current working directory:</strong> <code>${process.cwd()}</code></p>
+        </div>
+      </body>
+      </html>
+    `);
+  });
 }
 
-// Health check endpoint for Railway
+// Enhanced health check endpoint for Railway/Docker
 app.get('/health', (req, res) => {
+  const buildExists = fs.existsSync(buildPath);
+  const indexExists = fs.existsSync(path.join(buildPath, 'index.html'));
+  
   res.status(200).json({ 
     status: 'healthy',
     service: 'NOTAM Dashboard V2',
@@ -106,6 +141,12 @@ app.get('/health', (req, res) => {
     uptime: Math.floor(process.uptime()),
     environment: process.env.NODE_ENV || 'production',
     buildTool: 'Vite',
+    build: {
+      directoryExists: buildExists,
+      indexExists: indexExists,
+      path: buildPath,
+      files: buildExists ? fs.readdirSync(buildPath).length : 0
+    },
     credentials: {
       clientIdConfigured: !!CLIENT_ID,
       clientSecretConfigured: !!CLIENT_SECRET
@@ -218,7 +259,6 @@ function parseNotamStructure(notamText) {
     
     // Extract validity dates from A) and B) C) lines
     if (line.match(/^A\)\s*[A-Z]{4}/)) {
-      // A) line contains location
       continue;
     }
     
@@ -241,11 +281,9 @@ function parseNotamStructure(notamText) {
     // Extract main content from E) line
     if (line.startsWith('E)')) {
       mainContent = line.substring(2).trim();
-      // Continue reading subsequent lines that are part of the E) section
       for (let j = i + 1; j < lines.length; j++) {
         const nextLine = lines[j];
         if (nextLine.match(/^[A-Z]\)/)) {
-          // New section started
           break;
         }
         if (nextLine && !nextLine.includes('FR:') && !nextLine.includes('FRENCH:')) {
@@ -257,19 +295,14 @@ function parseNotamStructure(notamText) {
       continue;
     }
     
-    // Collect other content that's not structural
     if (!line.match(/^[A-Z]\)/) && !line.includes('FR:') && !line.includes('FRENCH:') && line.length > 10) {
       additionalLines.push(line);
     }
   }
 
-  // Clean up the main content
   const cleanContent = cleanNotamContent(mainContent);
-  
-  // Create summary (first sentence or up to 200 chars)
   const summary = createSummary(cleanContent);
   
-  // Create body with additional context
   let body = cleanContent;
   if (additionalLines.length > 0) {
     body += '\n\n' + additionalLines.join('\n');
@@ -289,9 +322,7 @@ function cleanNotamContent(content) {
   if (!content) return '';
   
   return content
-    // Remove excessive whitespace
     .replace(/\s+/g, ' ')
-    // Expand common abbreviations
     .replace(/\bDEP\b/g, 'DEPARTURE')
     .replace(/\bEXP\b/g, 'EXPECT')
     .replace(/\bDLA\b/g, 'DELAY')
@@ -302,7 +333,6 @@ function cleanNotamContent(content) {
     .replace(/\bCLSD\b/g, 'CLOSED')
     .replace(/\bRWY\b/g, 'RUNWAY')
     .replace(/\bTWY\b/g, 'TAXIWAY')
-    // Clean up formatting
     .replace(/\s*:\s*/g, ': ')
     .replace(/\s*\.\s*/g, '. ')
     .trim();
@@ -311,13 +341,11 @@ function cleanNotamContent(content) {
 function createSummary(content) {
   if (!content) return 'NOTAM information not available';
   
-  // Try to get first sentence
   const firstSentence = content.split(/[.!?]/)[0];
   if (firstSentence && firstSentence.length > 20 && firstSentence.length < 150) {
     return firstSentence.trim();
   }
   
-  // Otherwise, take first 180 characters
   if (content.length > 180) {
     return content.substring(0, 177).trim() + '...';
   }
@@ -325,24 +353,15 @@ function createSummary(content) {
   return content.trim();
 }
 
-function extractQLineFromText(text) {
-  const qLineMatch = text.match(/Q\)[^\r\n]+/);
-  return qLineMatch ? qLineMatch[0] : '';
-}
-
 function parseNotamText(item) {
-  // Handle different data structures from NAVCAN
   let rawText = '';
   let englishText = '';
-  let frenchText = '';
 
-  // Check if item has nested JSON structure
   if (item.raw && typeof item.raw === 'string') {
     try {
       const parsedRaw = JSON.parse(item.raw);
       rawText = parsedRaw.raw || parsedRaw.english || item.raw;
       englishText = parsedRaw.english || '';
-      frenchText = parsedRaw.french || '';
     } catch (e) {
       rawText = item.raw;
     }
@@ -351,16 +370,13 @@ function parseNotamText(item) {
       const parsedText = JSON.parse(item.text);
       rawText = parsedText.raw || parsedText.english || item.text;
       englishText = parsedText.english || '';
-      frenchText = parsedText.french || '';
     } catch (e) {
       rawText = item.text;
     }
   } else {
-    // Try other fields
     rawText = item.raw || item.text || item.message || item.fullText || item.summary || '';
   }
 
-  // If we still don't have content, return default
   if (!rawText) {
     return {
       summary: 'NOTAM information not available',
@@ -372,10 +388,7 @@ function parseNotamText(item) {
     };
   }
 
-  // Use English version if available, otherwise use raw
   const contentToProcess = englishText || rawText;
-  
-  // Parse the NOTAM structure
   const parsedNotam = parseNotamStructure(contentToProcess);
   
   return {
@@ -430,7 +443,6 @@ function normalizeDateString(dateStr) {
 }
 
 function determineClassificationEnhanced(parsedContent, qLine) {
-  // Check Q-Line first for most accurate classification
   if (qLine) {
     const qLineParts = qLine.split('/');
     if (qLineParts.length >= 2) {
@@ -438,17 +450,17 @@ function determineClassificationEnhanced(parsedContent, qLine) {
       if (code.length >= 2) {
         const classCode = code.substr(0, 2);
         const qCodeMap = {
-          'QA': 'AA',  // Aerodrome
-          'QF': 'SVC', // Fuel/Services 
-          'QM': 'RW',  // Runway
-          'QT': 'TW',  // Taxiway
-          'QI': 'AD',  // ILS/Navigation
-          'QR': 'AD',  // Radio/Navigation
-          'QC': 'AC',  // Communication
-          'QS': 'SVC', // Services
-          'QL': 'AD',  // Lighting
-          'QN': 'AD',  // Navigation
-          'QO': 'AO'   // Other
+          'QA': 'AA',
+          'QF': 'SVC',
+          'QM': 'RW',
+          'QT': 'TW',
+          'QI': 'AD',
+          'QR': 'AD',
+          'QC': 'AC',
+          'QS': 'SVC',
+          'QL': 'AD',
+          'QN': 'AD',
+          'QO': 'AO'
         };
         if (qCodeMap[classCode]) {
           return qCodeMap[classCode];
@@ -457,7 +469,6 @@ function determineClassificationEnhanced(parsedContent, qLine) {
     }
   }
   
-  // Content-based classification as fallback
   const content = (parsedContent.summary + ' ' + parsedContent.body).toUpperCase();
   
   if (/\b(RUNWAY|RWY)\b.*\b(CLSD|CLOSED|CLOSURE)\b/i.test(content)) return 'RW';
@@ -472,15 +483,13 @@ function determineClassificationEnhanced(parsedContent, qLine) {
   if (/\b(COM|COMMUNICATION|RADIO|FREQ|FREQUENCY)\b/i.test(content)) return 'AC';
   if (/\b(CAPACITY|DELAY|DEPARTURE|ARRIVAL)\b/i.test(content)) return 'AO';
   
-  return 'AO'; // Other
+  return 'AO';
 }
 
 function normalizeCFPSNotam(item, icao, index) {
   try {
-    // Enhanced content parsing
     const parsedContent = parseNotamText(item);
     
-    // Extract dates - try from parsed content first, then item fields
     const validFrom = normalizeDateString(
       parsedContent.validFrom || 
       item.start || 
@@ -506,16 +515,9 @@ function normalizeCFPSNotam(item, icao, index) {
       ''
     );
     
-    // Get NOTAM number from parsed content or item
     const number = parsedContent.number || item.id || item.notamId || item.number || '';
-    
-    // Generate ID
     const id = `${icao}-${number || index}`;
-    
-    // Determine classification using enhanced logic
     const classification = determineClassificationEnhanced(parsedContent, parsedContent.qLine);
-    
-    // Determine type
     const type = (item.type && /^[A-Z]$/.test(item.type)) ? item.type : 'A';
 
     return {
@@ -562,7 +564,6 @@ function parseCFPSResponse(icao, rawData) {
   return normalizedNotams;
 }
 
-// Enhanced NAV CANADA CFPS helper with proper parsing
 async function fetchNavCanadaNotamsServerSide(icao) {
   const upperIcao = (icao || '').toUpperCase();
   if (!/^[A-Z]{4}$/.test(upperIcao)) {
@@ -593,7 +594,6 @@ async function fetchNavCanadaNotamsServerSide(icao) {
       return [];
     }
 
-    // Use enhanced parsing
     return parseCFPSResponse(upperIcao, rawData);
 
   } catch (err) {
@@ -609,7 +609,6 @@ app.get('/api/notams', async (req, res) => {
   
   console.log(`[${new Date().toISOString()}] NOTAM request for ICAO: ${icao}`);
   
-  // Validate ICAO code
   if (!icao || icao.length !== 4 || !/^[A-Z]{4}$/.test(icao)) {
     console.log(`[${new Date().toISOString()}] Invalid ICAO: ${icao}`);
     return res.status(400).json({ 
@@ -631,12 +630,11 @@ app.get('/api/notams', async (req, res) => {
         'Accept': 'application/json'
       },
       timeout: 15000,
-      validateStatus: (status) => status < 500 // Don't throw on 4xx errors
+      validateStatus: (status) => status < 500
     });
 
     console.log(`[${new Date().toISOString()}] FAA API response status: ${notamRes.status}`);
     
-    // Handle rate limiting
     if (notamRes.status === 429) {
       console.log(`[${new Date().toISOString()}] Rate limited for ${icao}`);
       return res.status(429).json({ 
@@ -646,10 +644,8 @@ app.get('/api/notams', async (req, res) => {
       });
     }
     
-    // Handle other client errors
     if (notamRes.status >= 400) {
       console.log(`[${new Date().toISOString()}] FAA API error ${notamRes.status} for ${icao}`);
-      // Try NAVCAN fallback for Canadian ICAOs immediately on FAA errors
       if (icao.startsWith('C')) {
         console.log(`[${new Date().toISOString()}] Trying NAV CANADA fallback after FAA error for ${icao}`);
         const navNotams = await fetchNavCanadaNotamsServerSide(icao);
@@ -673,10 +669,8 @@ app.get('/api/notams', async (req, res) => {
       });
     }
 
-    // Verify response structure
     if (!notamRes.data) {
       console.error(`[${new Date().toISOString()}] Empty response data for ${icao}`);
-      // Try NAVCAN fallback for Canadian ICAOs
       if (icao.startsWith('C')) {
         const navNotams = await fetchNavCanadaNotamsServerSide(icao);
         return res.json({
@@ -693,11 +687,9 @@ app.get('/api/notams', async (req, res) => {
       return res.status(500).json({ error: "Empty response from FAA API" });
     }
     
-    // If FAA returned items array or equivalent
     if (!notamRes.data.items) {
       console.warn(`[${new Date().toISOString()}] FAA payload missing items array for ${icao}`, 
         JSON.stringify(notamRes.data).substring(0, 200));
-      // If FAA returned a valid but empty payload, consider NAVCAN fallback for Canadian ICAOs
       if (icao.startsWith('C')) {
         const navNotams = await fetchNavCanadaNotamsServerSide(icao);
         if (navNotams && navNotams.length > 0) {
@@ -716,7 +708,6 @@ app.get('/api/notams', async (req, res) => {
       return res.status(500).json({ error: "Unexpected response format from FAA API" });
     }
 
-    // Parse and process NOTAMs
     const items = notamRes.data.items || [];
     console.log(`[${new Date().toISOString()}] Processing ${items.length} raw NOTAMs for ${icao}`);
     
@@ -748,7 +739,7 @@ app.get('/api/notams', async (req, res) => {
           console.error(`[${new Date().toISOString()}] Error parsing NOTAM item ${index}:`, itemError);
           return null;
         }
-      }).filter(Boolean); // Remove null items
+      }).filter(Boolean);
       
     } catch (parseErr) {
       console.error(`[${new Date().toISOString()}] Failed to parse NOTAM data for ${icao}:`, parseErr);
@@ -763,11 +754,11 @@ app.get('/api/notams', async (req, res) => {
     // Filter for currently valid or future NOTAMs only
     const now = new Date();
     const validNotams = parsed.filter(notam => {
-      if (!notam.validTo) return true; // Keep if end time missing
+      if (!notam.validTo) return true;
       try {
         return new Date(notam.validTo) >= now;
       } catch {
-        return true; // Keep if date parsing fails
+        return true;
       }
     });
 
@@ -790,7 +781,6 @@ app.get('/api/notams', async (req, res) => {
         });
       }
       console.log(`[${new Date().toISOString()}] NAV CANADA fallback returned no results for ${icao}`);
-      // Continue to return FAA empty payload below (consistent behaviour)
     }
 
     // Sort by dispatcher priority
@@ -803,19 +793,13 @@ app.get('/api/notams', async (req, res) => {
       const isRscB = /rsc/i.test(b.summary);
       const isCrfiB = /crfi/i.test(b.summary);
 
-      // Priority 1: Runway/Taxiway closures
       if (isClosureA && !isClosureB) return -1;
       if (!isClosureA && isClosureB) return 1;
-
-      // Priority 2: RSC (Runway Surface Conditions)
       if (isRscA && !isRscB) return -1;
       if (!isRscA && isRscB) return 1;
-
-      // Priority 3: CRFI (Canadian Runway Friction Index)
       if (isCrfiA && !isCrfiB) return -1;
       if (!isCrfiA && isCrfiB) return 1;
 
-      // Default: Most recent first
       try {
         const dateA = new Date(a.validFrom || a.issued);
         const dateB = new Date(b.validFrom || b.issued);
@@ -825,13 +809,11 @@ app.get('/api/notams', async (req, res) => {
       }
     });
 
-    // Limit to first 50 for performance
     const limitedNotams = validNotams.slice(0, 50);
     
     const processingTime = Date.now() - startTime;
     console.log(`[${new Date().toISOString()}] Sending ${limitedNotams.length} NOTAMs for ${icao} (${processingTime}ms)`);
 
-    // Send response with metadata
     res.json({
       data: limitedNotams,
       metadata: {
@@ -872,13 +854,46 @@ app.get('/api/notams', async (req, res) => {
   }
 });
 
-// Catch all handler for React Router (must be last)
+// Enhanced catch all handler for React Router with better error handling
 app.get('*', (req, res) => {
-  const indexPath = path.join(__dirname, 'dist', 'index.html');
+  const indexPath = path.join(buildPath, 'index.html');
+  
   if (fs.existsSync(indexPath)) {
+    console.log(`📄 Serving index.html for route: ${req.path}`);
     res.sendFile(indexPath);
   } else {
-    res.status(404).send('Build not found. Run "npm run build" first.');
+    console.error(`❌ index.html not found at: ${indexPath}`);
+    res.status(404).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>NOTAM Dashboard V2 - Application Not Built</title>
+        <style>
+          body { font-family: Inter, sans-serif; margin: 40px; background: #0f172a; color: #e2e8f0; }
+          .container { max-width: 600px; margin: 0 auto; padding: 40px; background: rgba(30, 41, 59, 0.6); border-radius: 12px; }
+          h1 { color: #ef4444; }
+          h2 { color: #fbbf24; }
+          code { background: #374151; padding: 4px 8px; border-radius: 4px; font-family: monospace; }
+          ol { text-align: left; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>❌ Application Not Built</h1>
+          <p>The React application hasn't been built for production.</p>
+          <p><strong>Expected index.html at:</strong> <code>${indexPath}</code></p>
+          <p><strong>Build directory exists:</strong> ${fs.existsSync(buildPath) ? '✅ Yes' : '❌ No'}</p>
+          <h2>To fix this:</h2>
+          <ol>
+            <li>Run <code>npm run build</code></li>
+            <li>Restart the server with <code>npm start</code></li>
+          </ol>
+          <p><strong>Current working directory:</strong> <code>${process.cwd()}</code></p>
+          <p><strong>Node.js version:</strong> <code>${process.version}</code></p>
+        </div>
+      </body>
+    </html>
+    `);
   }
 });
 
@@ -904,14 +919,31 @@ function formatUptime(seconds) {
   return `${secs}s`;
 }
 
-// Start server
+// Start server with enhanced logging
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 NOTAM Dashboard V2 (Vite) running on port ${PORT}`);
   console.log(`📅 Started at: ${new Date().toISOString()}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'production'}`);
-  console.log(`🔑 FAA API Credentials: ${CLIENT_ID && CLIENT_SECRET ? '✅ Configured' : '❌ Missing'}`);
+  console.log(`🏗️  Build tool: Vite`);
+  console.log(`📁 Serving from: ${buildPath}`);
+  console.log(`📄 Index file: ${path.join(buildPath, 'index.html')}`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+  console.log(`📊 Status endpoint: http://localhost:${PORT}/api/status`);
+  console.log(`🔑 FAA API Credentials: ${CLIENT_ID && CLIENT_SECRET ? '✅ Configured' : '❌ Missing'}`);
+  
+  // Check build status on startup
+  if (!fs.existsSync(buildPath)) {
+    console.error(`❌ WARNING: Build directory not found at ${buildPath}`);
+    console.error(`📝 Run "npm run build" to create the production build`);
+  } else if (!fs.existsSync(path.join(buildPath, 'index.html'))) {
+    console.error(`❌ WARNING: index.html not found in build directory`);
+    console.error(`📝 The build may be incomplete`);
+  } else {
+    const buildFiles = fs.readdirSync(buildPath);
+    console.log(`✅ Build files found and ready to serve (${buildFiles.length} files)`);
+    console.log(`📋 Build contents: ${buildFiles.slice(0, 10).join(', ')}${buildFiles.length > 10 ? '...' : ''}`);
+  }
 });
 
 // Graceful shutdown handling
