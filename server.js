@@ -154,6 +154,11 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Add minimal /ping endpoint (compatible with Railway container healthchecks)
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
+
 // Status endpoint with more detailed information
 app.get('/api/status', (req, res) => {
   res.status(200).json({
