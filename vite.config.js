@@ -24,10 +24,8 @@ export default defineConfig({
     minify: 'terser',
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom'],
-          utils: ['axios']
-        }
+        // Let Rollup/Vite decide chunking automatically to avoid empty named chunks.
+        // Removed manualChunks vendor/utils to prevent "Generated an empty chunk" messages.
       }
     }
   },
