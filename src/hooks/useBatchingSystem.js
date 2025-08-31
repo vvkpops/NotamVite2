@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { BATCH_INTERVAL_MS, CALLS_PER_WINDOW, WINDOW_MS } from '../constants';
+import { BATCH_INTERVAL_MS, CALLS_PER_WINDOW, WINDOW_MS, MAX_RETRIES } from '../constants';
 
 export const useBatchingSystem = ({ 
   activeSession, 
-  loadedIcaosSet, 
-  loadingIcaosSet, 
-  setLoadingIcaosSet, 
   onFetchNotams 
 }) => {
   const [icaoQueue, setIcaoQueue] = useState([]);
+  const [loadingIcaosSet, setLoadingIcaosSet] = useState(new Set());
   const [batchingActive, setBatchingActive] = useState(false);
+  const [retryCounts, setRetryCounts] = useState({});
+
   const callTimestampsRef = useRef([]);
   const batchTimerRef = useRef(null);
 
@@ -28,7 +28,6 @@ export const useBatchingSystem = ({
       return;
     }
 
-    // Use a function to get the next ICAO from the queue to avoid stale closures
     let nextIcao;
     setIcaoQueue(currentQueue => {
       if (currentQueue.length === 0) {
@@ -52,19 +51,10 @@ export const useBatchingSystem = ({
 
     if (callTimestampsRef.current.length >= CALLS_PER_WINDOW) {
       const oldestCall = callTimestampsRef.current[0];
-      const waitTime = WINDOW_MS - (now - oldestCall) + 500; // Add a small buffer
+      const waitTime = WINDOW_MS - (now - oldestCall) + 500;
       console.log(`[Batching] Rate limit active. Re-queueing ${nextIcao} and waiting for ${Math.ceil(waitTime / 1000)}s`);
-      setIcaoQueue(prev => [...prev, nextIcao]); // Put it back at the end
-      if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
+      setIcaoQueue(prev => [nextIcao, ...prev]); // Put it back at the front
       batchTimerRef.current = setTimeout(processIcaoBatch, waitTime);
-      return;
-    }
-
-    if (loadedIcaosSet.has(nextIcao) || loadingIcaosSet.has(nextIcao)) {
-      console.log(`[Batching] Skipping already loaded/loading ICAO: ${nextIcao}`);
-      // Immediately process the next item in the queue if it exists
-      if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
-      batchTimerRef.current = setTimeout(processIcaoBatch, 50);
       return;
     }
 
@@ -74,8 +64,24 @@ export const useBatchingSystem = ({
     try {
       const result = await onFetchNotams(nextIcao);
       if (result && result.error) {
-        console.warn(`[Batching] Re-queueing ${nextIcao} due to error:`, result.error);
-        setIcaoQueue(prev => [...prev, nextIcao]);
+        const currentRetryCount = retryCounts[nextIcao] || 0;
+        if (currentRetryCount < MAX_RETRIES) {
+          console.warn(`[Batching] Re-queueing ${nextIcao} (attempt ${currentRetryCount + 1}) due to error:`, result.error);
+          setRetryCounts(prev => ({...prev, [nextIcao]: currentRetryCount + 1}));
+          setIcaoQueue(prev => [...prev, nextIcao]); // Put it at the end to not block others
+        } else {
+          console.error(`[Batching] ICAO ${nextIcao} failed after ${MAX_RETRIES} attempts. Giving up.`);
+          result.isFinalError = true; // Signal to parent hook this is a permanent failure
+        }
+      } else {
+        // Clear retry count on success
+        if (retryCounts[nextIcao]) {
+          setRetryCounts(prev => {
+            const newCounts = {...prev};
+            delete newCounts[nextIcao];
+            return newCounts;
+          });
+        }
       }
     } catch (error) {
       console.error(`[Batching] Critical error processing ${nextIcao}. Re-queueing.`, error);
@@ -86,26 +92,22 @@ export const useBatchingSystem = ({
         newSet.delete(nextIcao);
         return newSet;
       });
-      // Always schedule the next attempt
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
       batchTimerRef.current = setTimeout(processIcaoBatch, BATCH_INTERVAL_MS);
     }
-  }, [
-    activeSession, loadedIcaosSet, loadingIcaosSet, 
-    onFetchNotams, stopBatching, setLoadingIcaosSet
-  ]);
+  }, [activeSession, onFetchNotams, stopBatching, retryCounts]);
 
-  const startBatching = useCallback(() => {
-    if (!batchingActive && icaoQueue.length > 0 && activeSession) {
+  const startBatching = useCallback((queue) => {
+    setIcaoQueue(queue);
+    if (!batchingActive && queue.length > 0 && activeSession) {
       console.log('[Batching] Starting batch processing...');
       setBatchingActive(true);
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
       batchTimerRef.current = setTimeout(processIcaoBatch, 0);
     }
-  }, [batchingActive, icaoQueue.length, activeSession, processIcaoBatch]);
+  }, [batchingActive, activeSession, processIcaoBatch]);
 
   useEffect(() => {
-    // Cleanup on unmount
     return () => {
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
     };
@@ -113,8 +115,9 @@ export const useBatchingSystem = ({
 
   return {
     icaoQueue,
-    setIcaoQueue,
+    loadingIcaosSet,
     batchingActive,
     startBatching,
+    setIcaoQueue
   };
 };
