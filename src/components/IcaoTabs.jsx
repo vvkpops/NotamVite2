@@ -6,7 +6,8 @@ const IcaoTabs = ({
   onTabClick, 
   icaoSet, 
   notamDataByIcao, 
-  newNotamsByIcao
+  newNotamsByIcao,
+  failedIcaosSet
 }) => {
   if (icaoSet.length === 0) return null;
 
@@ -45,14 +46,22 @@ const IcaoTabs = ({
       {icaoSet.map(icao => {
         const notamCount = getNotamCount(icao);
         const newCount = getNewNotamCount(icao);
+        const hasFailed = failedIcaosSet.has(icao);
         
+        let tabClass = `icao-tab ${tabMode === icao ? "active" : ""}`;
+        if (hasFailed) {
+          tabClass += " failed";
+        }
+
         return (
           <button
             key={icao}
             onClick={() => onTabClick(icao)}
-            className={`icao-tab ${tabMode === icao ? "active" : ""}`}
+            className={tabClass}
+            title={hasFailed ? `Failed to load NOTAMs for ${icao}` : `${icao} NOTAMs`}
           >
-            {icao} ({notamCount})
+            {hasFailed && <i className="fa fa-exclamation-triangle mr-1"></i>}
+            {icao} ({notamCount > 0 ? notamCount : '...'})
             {renderNotificationBadge(newCount)}
           </button>
         );
