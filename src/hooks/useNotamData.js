@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchNotamsForIcao } from '../services/notamService';
 import { getCachedNotamData, setCachedNotamData, isCacheValid } from '../utils/storageUtils';
-import { compareNotamSets }s from '../utils/notamUtils';
+import { compareNotamSets } from '../utils/notamUtils';
 import { AUTO_REFRESH_INTERVAL_MS, BATCH_INTERVAL_MS, NEW_NOTAM_HIGHLIGHT_DURATION_MS } from '../constants';
 
 export const useNotamData = ({ icaoSet, activeSession, isInitialized, showNotification }) => {
