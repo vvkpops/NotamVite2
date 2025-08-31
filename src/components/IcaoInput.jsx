@@ -3,15 +3,13 @@
 import React, { useState } from 'react';
 
 const IcaoInput = ({ 
-  icaoInput, 
-  setIcaoInput, 
   icaoSet, 
   icaoListExpanded, 
   setIcaoListExpanded, 
   onSubmit, 
   onRemoveIcao 
 }) => {
-  const [inputValue, setInputValue] = useState(icaoInput || '');
+  const [inputValue, setInputValue] = useState('');
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -24,7 +22,6 @@ const IcaoInput = ({
     if (icaos.length > 0) {
       onSubmit(icaos);
       setInputValue('');
-      setIcaoInput('');
     }
   };
 
@@ -35,10 +32,7 @@ const IcaoInput = ({
           <input
             type="text"
             value={inputValue}
-            onChange={(e) => {
-              setInputValue(e.target.value);
-              setIcaoInput(e.target.value);
-            }}
+            onChange={(e) => setInputValue(e.target.value)}
             placeholder="Enter ICAO codes (e.g., KJFK, KLAX, EGLL)"
             className="flex-1 px-4 py-2 rounded-lg bg-slate-700 border border-slate-600 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500"
           />
