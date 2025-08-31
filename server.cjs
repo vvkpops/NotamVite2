@@ -17,26 +17,14 @@ app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: [
-        "'self'", 
-        "https://cdn.tailwindcss.com", 
-        // Add hashes for any inline scripts if needed, or 'unsafe-inline' if they are dynamic.
-        // For the scripts in your index.html, using 'unsafe-inline' is simpler for now.
-        "'unsafe-inline'" 
-      ],
-      styleSrc: [
-        "'self'", 
-        "https://cdnjs.cloudflare.com", 
-        "https://fonts.googleapis.com", 
-        "'unsafe-inline'" // Needed for Font Awesome and some dynamic styles
-      ],
-      fontSrc: ["'self'", "https://cdnjs.cloudflare.com", "https://fonts.gstatic.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "https://fonts.googleapis.com", "'unsafe-inline'"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
       imgSrc: ["'self'", "data:"],
       connectSrc: [
         "'self'", 
         "https://plan.navcanada.ca",
-        // If you use Vercel analytics or similar, add its domain here
-        "https://vitals.vercel-insights.com" 
+        "https://vitals.vercel-insights.com"
       ],
       objectSrc: ["'none'"],
       upgradeInsecureRequests: [],
@@ -57,13 +45,11 @@ if (process.env.RAILWAY_STATIC_URL) {
 }
 app.use(cors({
   origin: (origin, callback) => {
-    // allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
     }
-    return callback(null, true);
   }
 }));
 
@@ -97,7 +83,7 @@ try {
   }
 } catch (err) {
   console.error("❌ FATAL ERROR LOADING CREDENTIALS:", err.message);
-  process.exit(1);
+  // Don't exit in a running server environment, just log the error.
 }
 
 // --- Static File Serving ---
@@ -117,11 +103,7 @@ app.get('/health', (req, res) => {
     buildExists: fs.existsSync(buildPath)
   };
   try {
-    if (healthcheck.faacreds && healthcheck.buildExists) {
-      res.status(200).send(healthcheck);
-    } else {
-      res.status(503).send(healthcheck);
-    }
+    res.status(healthcheck.faacreds && healthcheck.buildExists ? 200 : 503).send(healthcheck);
   } catch (error) {
     healthcheck.message = error.message;
     res.status(503).send(healthcheck);
@@ -135,16 +117,17 @@ const { normalizeCFPSNotam } = require('./src/utils/cfpsParser.cjs');
 
 async function fetchNavCanadaNotamsServerSide(icao) {
   const upperIcao = (icao || '').toUpperCase();
-  if (!/^[A-Z]{4}$/.test(upperIcao)) return [];
+  if (!/^[A-Z]{4}$/.test(upperIcao)) return { data: [], error: 'Invalid ICAO for NAVCAN' };
   const navUrl = `https://plan.navcanada.ca/weather/api/alpha/?site=${upperIcao}&alpha=notam`;
   try {
     console.log(`[NAVCAN] Fetching ${upperIcao}`);
     const resp = await axios.get(navUrl, { timeout: 8000 });
     const items = resp.data?.alpha || [];
-    return items.map((item, index) => normalizeCFPSNotam(item, upperIcao, index)).filter(Boolean);
+    const data = items.map((item, index) => normalizeCFPSNotam(item, upperIcao, index)).filter(Boolean);
+    return { data, source: 'NAVCAN' };
   } catch (err) {
     console.error(`[NAVCAN] Error for ${upperIcao}:`, err.message);
-    return [];
+    return { data: [], error: err.message };
   }
 }
 
@@ -157,11 +140,7 @@ app.get('/api/notams', async (req, res) => {
   try {
     const url = `https://external-api.faa.gov/notamapi/v1/notams?icaoLocation=${icao}&responseFormat=geoJson&pageSize=500`;
     const notamRes = await axios.get(url, {
-      headers: {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'User-Agent': 'NOTAM-Dashboard-V2/2.0.0',
-      },
+      headers: { 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'User-Agent': 'NOTAM-Dashboard-V2/2.1.0' },
       timeout: 10000,
     });
 
@@ -170,44 +149,43 @@ app.get('/api/notams', async (req, res) => {
       const core = item.properties?.coreNOTAMData?.notam || {};
       const translation = (item.properties?.coreNOTAMData?.notamTranslation || [])[0] || {};
       return {
-        id: `${icao}-${core.number || index}`,
-        number: core.number || '', type: core.type || '',
-        classification: core.classification || '',
-        icao: core.icaoLocation || icao, location: core.location || '',
-        validFrom: core.effectiveStart || core.issued || '',
-        validTo: core.effectiveEnd || '',
+        id: `${icao}-${core.number || index}`, number: core.number || '', type: core.type || '',
+        classification: core.classification || '', icao: core.icaoLocation || icao, location: core.location || '',
+        validFrom: core.effectiveStart || core.issued || '', validTo: core.effectiveEnd || '',
         summary: translation.simpleText || core.text || '', body: core.text || '',
-        qLine: (translation.formattedText || '').split('\n')[0],
-        issued: core.issued || '', source: 'FAA',
+        qLine: (translation.formattedText || '').split('\n')[0], issued: core.issued || '', source: 'FAA',
       };
-    }).filter(notam => {
-      if (!notam.validTo) return true;
-      return new Date(notam.validTo) >= new Date();
-    });
+    }).filter(notam => !notam.validTo || new Date(notam.validTo) >= new Date());
 
     if (parsed.length === 0 && icao.startsWith('C')) {
       console.log(`FAA returned 0 for ${icao}, trying NAVCAN fallback.`);
-      parsed = await fetchNavCanadaNotamsServerSide(icao);
+      const navcanResult = await fetchNavCanadaNotamsServerSide(icao);
+      return res.json({ data: navcanResult.data, source: navcanResult.source || 'NAVCAN' });
     }
     
-    res.json({ data: parsed });
+    res.json({ data: parsed, source: 'FAA' });
 
   } catch (error) {
-    console.error(`Error fetching NOTAMs for ${icao}:`, error.message);
+    console.error(`[Server] Error fetching NOTAMs for ${icao}:`, error.message);
+    
     if (icao.startsWith('C')) {
-      console.log(`FAA request failed for ${icao}, trying NAVCAN fallback.`);
-      const navNotams = await fetchNavCanadaNotamsServerSide(icao);
-      if (navNotams.length > 0) {
-        return res.json({ data: navNotams });
+      console.log(`[Server] FAA request failed for ${icao}, trying NAVCAN fallback.`);
+      const navcanResult = await fetchNavCanadaNotamsServerSide(icao);
+      if (navcanResult.data.length > 0) {
+        return res.json({ data: navcanResult.data, source: navcanResult.source || 'NAVCAN' });
       }
     }
-    res.status(error.response?.status || 500).json({ error: "Failed to fetch NOTAMs", details: error.message });
+    
+    const status = error.response?.status || 500;
+    res.status(status).json({ 
+      error: "Failed to fetch NOTAMs from primary source.", 
+      details: error.message,
+      icao
+    });
   }
 });
 
-
 // --- Catch-all for React Router ---
-// This should be the LAST route
 app.get('*', (req, res) => {
   const indexPath = path.join(buildPath, 'index.html');
   if (fs.existsSync(indexPath)) {
@@ -224,6 +202,6 @@ app.get('*', (req, res) => {
 // --- Server Startup ---
 app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'production'}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🏥 Health check available at http://localhost:${PORT}/health`);
 });
