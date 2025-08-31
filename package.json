@@ -26,7 +26,8 @@
     "server": "nodemon server.cjs",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.cjs"
+    "start": "npm run build && node server.cjs",
+    "postinstall": "npm run build"
   },
   "engines": {
     "node": ">=18.0.0",
