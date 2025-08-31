@@ -13,7 +13,7 @@ import BackToTopButton from './components/BackToTopButton';
 import NotificationSystem from './components/NotificationSystem';
 
 // Modals
-import { RawNotamModal, IcaoRawModal, IcaoSetsModal, SaveSetModal } from './components/modal';
+import { IcaoRawModal, IcaoSetsModal, SaveSetModal } from './components/modal';
 
 // Services and Utils
 import { fetchNotamsForIcao } from './services/notamService';
@@ -34,7 +34,9 @@ import {
 import { useSessionManagement, useBatchingSystem } from './hooks';
 
 import { 
-  DEFAULT_FILTERS 
+  DEFAULT_FILTERS,
+  AUTO_REFRESH_INTERVAL_MS,
+  NEW_NOTAM_HIGHLIGHT_DURATION_MS
 } from './constants';
 
 function App() {
@@ -42,37 +44,29 @@ function App() {
   const [icaoSet, setIcaoSet] = useState([]);
   const [icaoInput, setIcaoInput] = useState('');
   const [notamDataByIcao, setNotamDataByIcao] = useState({});
-  const [notamFetchStatusByIcao, setNotamFetchStatusByIcao] = useState({});
-  const [lastNotamIdsByIcao, setLastNotamIdsByIcao] = useState({});
   const [loadedIcaosSet, setLoadedIcaosSet] = useState(new Set());
   const [loadingIcaosSet, setLoadingIcaosSet] = useState(new Set());
   const [tabMode, setTabMode] = useState("ALL");
   const [expandedCardKey, setExpandedCardKey] = useState(null);
   
-  // NEW NOTAM NOTIFICATION STATE
-  const [newNotamsByIcao, setNewNotamsByIcao] = useState({}); // Track new NOTAMs per ICAO
-  const [highlightedNotams, setHighlightedNotams] = useState(new Set()); // Track highlighted NOTAMs
+  // New NOTAM notification state
+  const [newNotamsByIcao, setNewNotamsByIcao] = useState({});
   
   // ICAO Sets functionality
   const [icaoSets, setIcaoSets] = useState([]);
   const [showIcaoSetsModal, setShowIcaoSetsModal] = useState(false);
   const [newSetName, setNewSetName] = useState('');
   const [showSaveSetModal, setShowSaveSetModal] = useState(false);
-  const [pendingNewSetAction, setPendingNewSetAction] = useState(false);
   
   // Modal state
-  const [showRawModal, setShowRawModal] = useState(false);
-  const [rawModalTitle, setRawModalTitle] = useState('');
-  const [rawModalContent, setRawModalContent] = useState('');
   const [showIcaoRawModal, setShowIcaoRawModal] = useState(false);
   
   // UI state
-  const [notificationCount, setNotificationCount] = useState(0);
   const [notifications, setNotifications] = useState([]);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
   const [icaoListExpanded, setIcaoListExpanded] = useState(true);
   const [cardScale, setCardScale] = useState(1.0);
-  const [autoRefreshCountdown, setAutoRefreshCountdown] = useState(300); // 5 minutes in seconds
+  const [autoRefreshCountdown, setAutoRefreshCountdown] = useState(AUTO_REFRESH_INTERVAL_MS / 1000);
   
   // Filter state
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
@@ -84,9 +78,7 @@ function App() {
     icaoQueue, 
     setIcaoQueue,
     batchingActive, 
-    setBatchingActive,
     startBatching,
-    stopBatching
   } = useBatchingSystem({
     activeSession,
     loadedIcaosSet,
@@ -95,317 +87,189 @@ function App() {
     onFetchNotams: handleFetchNotams
   });
 
-  // Show a notification for NOTAMs changes
-  const showNewNotamAlert = useCallback((text, icao, latestNotamKey) => {
+  const showNotification = useCallback((text, icao) => {
     const newNotification = {
       id: Date.now(),
       text,
       icao,
-      latestNotamKey,
       timestamp: new Date().toLocaleTimeString(),
       read: false
     };
     setNotifications(prev => [newNotification, ...prev.slice(0, 9)]);
-    setNotificationCount(prev => prev + 1);
   }, []);
 
-  // HYBRID SOLUTION: Simplified NOTAM fetch with better new NOTAM tracking
-  async function handleFetchNotams(icao, showAlertIfNew = true) {
+  // Main NOTAM fetching logic
+  async function handleFetchNotams(icao, isAutoRefresh = false) {
     if (!activeSession) return { error: true };
     
     try {
       const result = await fetchNotamsForIcao(icao);
-      const data = result?.data || result;
       
-      if (data?.error) {
-        setNotamFetchStatusByIcao(prev => ({ ...prev, [icao]: 'error' }));
-        return { error: data.error };
+      if (result?.error) {
+        console.error(`Error fetching NOTAMs for ${icao}:`, result.error);
+        return { error: result.error };
       }
       
-      const notams = Array.isArray(data) ? data : [];
-      
-      // Enhanced comparison logic for new NOTAM tracking
+      const notams = Array.isArray(result) ? result : [];
       const previousNotams = notamDataByIcao[icao] || [];
       const comparison = compareNotamSets(icao, previousNotams, notams);
       
-      // HYBRID SOLUTION: Always track new NOTAMs, but be smart about notifications
       if (comparison.added.length > 0) {
-        const newNotamIds = comparison.added.map(notam => {
-          const id = notam.id || notam.number || notam.qLine || notam.summary;
-          return { 
-            id, 
-            timestamp: Date.now(),
-            notam: notam,
-            issuedTime: notam.issued || notam.validFrom
-          };
-        });
-        
+        const newNotamInfo = comparison.added.map(notam => ({
+          id: notam.id || notam.number,
+          timestamp: Date.now()
+        }));
+
         setNewNotamsByIcao(prev => ({
           ...prev,
-          [icao]: [...(prev[icao] || []), ...newNotamIds]
+          [icao]: [...(prev[icao] || []), ...newNotamInfo]
         }));
         
-        // HYBRID: Only show notifications if this isn't a silent auto-refresh
-        // AND we have genuinely new NOTAMs (issued within reasonable time)
-        const shouldShowNotification = showAlertIfNew && comparison.added.some(notam => {
-          const issuedDate = parseDate(notam.issued || notam.validFrom);
-          if (!issuedDate) return true; // Show notification for NOTAMs without dates
-          
-          // Show notifications for NOTAMs issued within last 4 hours
-          // (more generous than vanilla's 60 minutes for notifications)
-          const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
-          return issuedDate > fourHoursAgo;
-        });
-        
-        if (shouldShowNotification) {
-          const notamKeys = newNotamIds.map(item => `${icao}-${item.id}`);
-          setHighlightedNotams(prev => new Set([...prev, ...notamKeys]));
-          
-          // Remove highlights after 60 seconds
-          notamKeys.forEach(key => {
-            setTimeout(() => {
-              setHighlightedNotams(prev => {
-                const newSet = new Set(prev);
-                newSet.delete(key);
-                return newSet;
-              });
-            }, 60000);
-          });
-          
-          showNewNotamAlert(
-            `${icao}: ${comparison.added.length} new NOTAM${comparison.added.length > 1 ? 's' : ''} detected!`,
-            icao,
-            comparison.added[0].id || comparison.added[0].number || comparison.added[0].qLine || comparison.added[0].summary
-          );
+        if (!isAutoRefresh) {
+            showNotification(`${icao}: ${comparison.added.length} new NOTAM(s) detected!`, icao);
         }
       }
       
-      if (showAlertIfNew && comparison.removed.length > 0) {
-        showNewNotamAlert(
-          `${icao}: ${comparison.removed.length} NOTAM${comparison.removed.length > 1 ? 's' : ''} cancelled/expired`,
-          icao,
-          comparison.removed[0].id || comparison.removed[0].number || comparison.removed[0].qLine || comparison.removed[0].summary
-        );
+      if (!isAutoRefresh && comparison.removed.length > 0) {
+        showNotification(`${icao}: ${comparison.removed.length} NOTAM(s) cancelled/expired.`, icao);
       }
       
-      // Clean up old new NOTAMs (older than 10 minutes)
-      const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
-      setNewNotamsByIcao(prev => ({
-        ...prev,
-        [icao]: (prev[icao] || []).filter(item => item.timestamp > tenMinutesAgo)
-      }));
-      
-      // Update state (unchanged)
-      const currSet = new Set(notams.map(n => n.id || n.number || n.qLine || n.summary));
-      setLastNotamIdsByIcao(prev => ({ ...prev, [icao]: currSet }));
       setNotamDataByIcao(prev => ({ ...prev, [icao]: notams }));
-      setNotamFetchStatusByIcao(prev => ({ ...prev, [icao]: 'success' }));
-      setLoadedIcaosSet(prev => new Set([...prev, icao]));
+      setLoadedIcaosSet(prev => new Set(prev).add(icao));
       
       return notams;
     } catch (error) {
-      setNotamFetchStatusByIcao(prev => ({ ...prev, [icao]: 'error' }));
+      console.error(`Unhandled error fetching for ${icao}:`, error);
       return { error: error.message };
     }
   }
 
-  // Helper functions for new NOTAM system
-  const hasNewNotams = useCallback((icao) => {
-    const newNotams = newNotamsByIcao[icao] || [];
-    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-    return newNotams.some(item => item.timestamp > fiveMinutesAgo);
-  }, [newNotamsByIcao]);
-
-  const isNotamHighlighted = useCallback((icao, notam) => {
-    const notamId = notam.id || notam.number || notam.qLine || notam.summary;
-    const key = `${icao}-${notamId}`;
-    return highlightedNotams.has(key);
-  }, [highlightedNotams]);
-
-  // Enhanced tab click handler
-  const handleTabClick = useCallback((newTabMode) => {
-    setTabMode(newTabMode);
-    
-    // Mark NOTAMs as "seen" for this ICAO when tab is clicked
-    if (newTabMode !== "ALL") {
-      // Clear the red dot for this ICAO after a short delay
-      setTimeout(() => {
-        setNewNotamsByIcao(prev => ({
-          ...prev,
-          [newTabMode]: []
-        }));
-      }, 1000); // 1 second delay to allow user to see the new NOTAMs
-    }
-  }, []);
-
-  // HYBRID SOLUTION: Simplified auto-refresh without problematic flags
+  // Effect for auto-refresh
   useEffect(() => {
     if (!activeSession || icaoSet.length === 0) return;
     
-    let autoRefreshTimer;
-    let countdownTimer;
-    let countdown = 300; // 5 minutes in seconds
-    
     const performAutoRefresh = () => {
       console.log('🔄 Performing auto-refresh...');
+      const refreshIcaos = [...loadedIcaosSet].filter(icao => icaoSet.includes(icao) && !loadingIcaosSet.has(icao));
       
-      // NO MORE isAutoRefreshRef - let the natural logic handle it
-      
-      // Only add ICAOs that are loaded, not currently loading, and not already queued
-      const refreshIcaos = icaoSet.filter(icao =>
-        loadedIcaosSet.has(icao) &&
-        !loadingIcaosSet.has(icao) &&
-        !icaoQueue.includes(icao)
-      );
-      
-      // Add to batching queue with showAlertIfNew = false for silent auto-refresh
       if (refreshIcaos.length > 0) {
-        setIcaoQueue(prev => [...prev, ...refreshIcaos]);
-        startBatching();
+        refreshIcaos.forEach(icao => handleFetchNotams(icao, true));
       }
     };
     
-    const updateCountdown = () => {
-      setAutoRefreshCountdown(countdown);
-      countdown--;
-      
-      if (countdown < 0) {
-        countdown = 300; // Reset to 5 minutes
-        performAutoRefresh();
-      }
-    };
-    
-    // Start timers
-    autoRefreshTimer = setInterval(performAutoRefresh, 5 * 60 * 1000); // 5 minutes
-    countdownTimer = setInterval(updateCountdown, 1000); // 1 second
+    const refreshInterval = setInterval(performAutoRefresh, AUTO_REFRESH_INTERVAL_MS);
+    const countdownInterval = setInterval(() => {
+      setAutoRefreshCountdown(prev => (prev > 0 ? prev - 1 : AUTO_REFRESH_INTERVAL_MS / 1000));
+    }, 1000);
     
     return () => {
-      clearInterval(autoRefreshTimer);
-      clearInterval(countdownTimer);
+      clearInterval(refreshInterval);
+      clearInterval(countdownInterval);
     };
-  }, [activeSession, icaoSet, loadedIcaosSet, loadingIcaosSet, icaoQueue, startBatching]);
+  }, [activeSession, icaoSet, loadedIcaosSet, loadingIcaosSet]);
 
-  // Cleanup effect for old highlights and notifications
+  // Cleanup effect for old "new" notam indicators
   useEffect(() => {
-    const cleanup = setInterval(() => {
+    const cleanupInterval = setInterval(() => {
       const now = Date.now();
-      const tenMinutesAgo = now - 10 * 60 * 1000;
-      
-      // Clean up old new NOTAMs
       setNewNotamsByIcao(prev => {
         const cleaned = {};
-        Object.keys(prev).forEach(icao => {
-          cleaned[icao] = prev[icao].filter(item => item.timestamp > tenMinutesAgo);
+        Object.entries(prev).forEach(([icao, notams]) => {
+          const freshNotams = notams.filter(n => now - n.timestamp < NEW_NOTAM_HIGHLIGHT_DURATION_MS);
+          if (freshNotams.length > 0) {
+            cleaned[icao] = freshNotams;
+          }
         });
         return cleaned;
       });
-    }, 60000); // Run every minute
+    }, 10000); // Run every 10 seconds
     
-    return () => clearInterval(cleanup);
+    return () => clearInterval(cleanupInterval);
   }, []);
 
-  // ICAO Sets management
-  const clearCurrentSet = () => {
-    setIcaoSet([]);
-    setNotamDataByIcao({});
-    setLastNotamIdsByIcao({});
-    setLoadedIcaosSet(new Set());
-    setNotamFetchStatusByIcao({});
-    setNewNotamsByIcao({});
-    setHighlightedNotams(new Set());
-    setExpandedCardKey(null);
-    setTabMode("ALL");
-    setIcaoQueue([]);
-    saveIcaos([]);
-    setCachedNotamData({});
-  };
-
-  const loadIcaoSet = (icaos) => {
-    if (!icaos || icaos.length === 0) return;
-    clearCurrentSet();
-    setIcaoSet(icaos);
-    setIcaoQueue(icaos);
-    saveIcaos(icaos);
-  };
-
-  const saveCurrentSetAs = (name) => {
-    if (icaoSet.length === 0) return;
-    const newSet = { name, icaos: icaoSet, created: new Date().toISOString() };
+  // ICAO Sets Management
+  const handleCreateSet = () => {
+    if (!newSetName.trim() || icaoSet.length === 0) return;
+    const newSet = { name: newSetName.trim(), icaos: icaoSet, created: new Date().toISOString() };
     const updatedSets = [...icaoSets, newSet];
     setIcaoSets(updatedSets);
     saveIcaoSets(updatedSets);
+    setNewSetName('');
+    setShowIcaoSetsModal(false);
+  };
+
+  const handleLoadSet = (icaosToLoad) => {
+    if (!icaosToLoad || icaosToLoad.length === 0) return;
+    setIcaoSet(icaosToLoad);
+    saveIcaos(icaosToLoad);
+    setNotamDataByIcao({});
+    setLoadedIcaosSet(new Set());
+    setIcaoQueue(icaosToLoad);
+    setShowIcaoSetsModal(false);
+  };
+  
+  const handleDeleteSet = (indexToDelete) => {
+      const updatedSets = icaoSets.filter((_, index) => index !== indexToDelete);
+      setIcaoSets(updatedSets);
+      saveIcaoSets(updatedSets);
+  };
+
+  const handleNewSetClick = () => {
+    if (icaoSet.length > 0) {
+      setShowSaveSetModal(true);
+    }
+  };
+  
+  const handleSaveSetModalClose = (shouldSave) => {
+    setShowSaveSetModal(false);
+    if (shouldSave) {
+        setShowIcaoSetsModal(true);
+    }
   };
 
   // Event handlers
   const handleIcaoSubmit = (newIcaos) => {
     if (newIcaos.length === 0) return;
     const updatedIcaos = [...new Set([...icaoSet, ...newIcaos])];
-    const icaosToLoad = newIcaos.filter(icao => !loadedIcaosSet.has(icao));
     setIcaoSet(updatedIcaos);
     saveIcaos(updatedIcaos);
-    if (icaosToLoad.length > 0) {
-      setIcaoQueue(prev => [...prev, ...icaosToLoad]);
-      startBatching();
-    }
+    setIcaoQueue(prev => [...prev, ...newIcaos.filter(icao => !icaoSet.includes(icao))]);
   };
 
   const handleRemoveIcao = (icaoToRemove) => {
     const updatedIcaos = icaoSet.filter(icao => icao !== icaoToRemove);
     setIcaoSet(updatedIcaos);
     saveIcaos(updatedIcaos);
-    setNotamDataByIcao(prev => {
-      const newData = { ...prev }; 
-      delete newData[icaoToRemove]; 
-      return newData;
-    });
-    setLoadedIcaosSet(prev => {
-      const newSet = new Set(prev); 
-      newSet.delete(icaoToRemove); 
-      return newSet;
-    });
-    // Clear new NOTAM tracking for removed ICAO
-    setNewNotamsByIcao(prev => {
-      const newData = { ...prev };
-      delete newData[icaoToRemove];
-      return newData;
-    });
-    setIcaoQueue(prev => prev.filter(icao => icao !== icaoToRemove));
-  };
-
-  const handleFilterChange = (filterKey) => {
-    setFilters(prev => ({ ...prev, [filterKey]: !prev[filterKey] }));
+    // Clean up associated state
+    const newNotamData = { ...notamDataByIcao };
+    delete newNotamData[icaoToRemove];
+    setNotamDataByIcao(newNotamData);
+    
+    const newLoaded = new Set(loadedIcaosSet);
+    newLoaded.delete(icaoToRemove);
+    setLoadedIcaosSet(newLoaded);
   };
 
   const handleReloadAll = () => {
     if (!icaoSet.length) return;
-    
     console.log('🔄 Manual reload all triggered');
-    
-    // Clear cache for manual reload
-    setCachedNotamData({});
-    
-    // Clear current data but keep ICAO set
-    const currentIcaos = [...icaoSet];
-    clearCurrentSet();
-    setIcaoSet(currentIcaos);
-    setIcaoQueue(currentIcaos);
-    startBatching();
+    setCachedNotamData({}); // Invalidate cache
+    setNotamDataByIcao({});
+    setLoadedIcaosSet(new Set());
+    setIcaoQueue([...icaoSet]);
   };
 
-  const handleCardClick = (cardKey, notam) => {
+  const handleCardClick = (cardKey) => {
     setExpandedCardKey(prev => prev === cardKey ? null : cardKey);
   };
 
   const handleNotificationClick = (notification) => {
-    setTabMode(notification.icao);
+    if (notification.icao) {
+        setTabMode(notification.icao);
+    }
     setShowNotificationModal(false);
     setNotifications(prev => prev.map(n => n.id === notification.id ? { ...n, read: true } : n));
-    setNotificationCount(prev => Math.max(0, prev - 1));
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleShowRaw = (currentTabMode, currentNotamData) => {
-    setShowIcaoRawModal(true);
   };
 
   // Load saved data on mount
@@ -419,32 +283,18 @@ function App() {
       
       if (savedIcaos.length > 0) {
         setIcaoSet(savedIcaos);
-        if (cachedData.notamData && Object.keys(cachedData.notamData).length > 0) {
-          const cacheAge = Date.now() - (cachedData.timestamp || 0);
-          const fiveMinutes = 5 * 60 * 1000;
-          if (cacheAge < fiveMinutes) {
-            setNotamDataByIcao(cachedData.notamData);
-            setLastNotamIdsByIcao(cachedData.lastIds || {});
-            const cachedIcaos = Object.keys(cachedData.notamData);
-            setLoadedIcaosSet(new Set(cachedIcaos));
-            setNotamFetchStatusByIcao(
-              cachedIcaos.reduce((acc, icao) => ({ ...acc, [icao]: 'success' }), {})
-            );
-            const icaosToQueue = savedIcaos.filter(icao => !cachedIcaos.includes(icao));
-            if (icaosToQueue.length > 0) {
-              setIcaoQueue(icaosToQueue);
-            }
-          } else {
-            setCachedNotamData({});
-            setIcaoQueue(savedIcaos);
-          }
+        if (cachedData.notamData && Object.keys(cachedData.notamData).length > 0 && (Date.now() - (cachedData.timestamp || 0) < AUTO_REFRESH_INTERVAL_MS)) {
+          setNotamDataByIcao(cachedData.notamData);
+          const cachedIcaos = Object.keys(cachedData.notamData);
+          setLoadedIcaosSet(new Set(cachedIcaos));
+          const icaosToQueue = savedIcaos.filter(icao => !cachedIcaos.includes(icao));
+          if (icaosToQueue.length > 0) setIcaoQueue(icaosToQueue);
         } else {
           setIcaoQueue(savedIcaos);
         }
       }
     } catch (e) {
       console.error('Failed to load saved data:', e);
-      setIcaoSets([]);
     }
   }, []);
 
@@ -453,90 +303,70 @@ function App() {
     if (Object.keys(notamDataByIcao).length > 0) {
       setCachedNotamData({
         notamData: notamDataByIcao,
-        lastIds: lastNotamIdsByIcao,
         timestamp: Date.now()
       });
     }
-  }, [notamDataByIcao, lastNotamIdsByIcao]);
+  }, [notamDataByIcao]);
 
   // Start batching when queue changes
   useEffect(() => {
     if (icaoQueue.length > 0 && !batchingActive && activeSession) {
-      const timer = setTimeout(startBatching, 100);
-      return () => clearTimeout(timer);
+      startBatching();
     }
   }, [icaoQueue.length, batchingActive, activeSession, startBatching]);
 
-  // Get computed values for rendering
-  const allNotams = Object.values(notamDataByIcao).flat();
-  const loadedCount = loadedIcaosSet.size;
-  const loadingCount = loadingIcaosSet.size;
-  const queuedCount = icaoQueue.length;
-
   if (!activeSession) {
     return (
-      <div className="inactive-session-container">
-        <div className="inactive-session-message">
-          <h1>✈️ NOTAM Dashboard V2</h1>
-          <h2>Session Taken Over</h2>
-          <p>This NOTAM Dashboard is already open in another tab or window.</p>
-          <p>Only one active session is allowed at a time to respect API rate limits.</p>
-          <div className="inactive-session-actions">
-            <button onClick={() => window.location.reload()} className="btn-primary">
-              Take Over This Session
-            </button>
-          </div>
-          <p className="inactive-session-note">
-            Taking over will close the dashboard in the other tab/window.
-          </p>
+        <div style={{textAlign: 'center', marginTop: '20vh', color: '#e2e8f0', fontFamily: 'Inter, sans-serif'}}>
+            <h1>Session Inactive</h1>
+            <p>Another NOTAM Dashboard tab is active. Please close it to use this one.</p>
         </div>
-      </div>
     );
   }
+
+  const notificationCount = notifications.filter(n => !n.read).length;
 
   return (
     <div className="App">
       <Header />
       
-      <main className="main-container">
-        <div className="top-controls">
-          <IcaoInput
-            icaoInput={icaoInput}
-            setIcaoInput={setIcaoInput}
-            onSubmit={handleIcaoSubmit}
-            disabled={!activeSession}
-          />
+      <main className="container mx-auto p-4">
+        <IcaoInput
+          icaoInput={icaoInput}
+          setIcaoInput={setIcaoInput}
+          icaoSet={icaoSet}
+          setIcaoListExpanded={setIcaoListExpanded}
+          icaoListExpanded={icaoListExpanded}
+          onSubmit={handleIcaoSubmit}
+          onRemoveIcao={handleRemoveIcao}
+        />
 
-          <IcaoSetsBar
-            icaoSets={icaoSets}
-            onLoadSet={loadIcaoSet}
-            onClearSet={clearCurrentSet}
-            onSaveSetClick={() => setShowSaveSetModal(true)}
-            onManageSetsClick={() => setShowIcaoSetsModal(true)}
-            hasCurrentSet={icaoSet.length > 0}
-          />
-        </div>
+        <IcaoSetsBar
+          icaoSets={icaoSets}
+          onShowSetsModal={() => setShowIcaoSetsModal(true)}
+          onNewSetClick={handleNewSetClick}
+          onLoadSet={handleLoadSet}
+          icaoSet={icaoSet}
+        />
 
         <FilterBar
           filters={filters}
-          onFilterChange={handleFilterChange}
+          onFilterChange={(key) => setFilters(prev => ({ ...prev, [key]: !prev[key] }))}
           keywordFilter={keywordFilter}
-          onKeywordChange={setKeywordFilter}
-          icaoSet={icaoSet}
-          onRemoveIcao={handleRemoveIcao}
-          onReloadAll={handleReloadAll}
-          onToggleList={() => setIcaoListExpanded(!icaoListExpanded)}
-          icaoListExpanded={icaoListExpanded}
+          setKeywordFilter={setKeywordFilter}
           cardScale={cardScale}
-          onCardScaleChange={setCardScale}
-          disabled={!activeSession}
+          setCardScale={setCardScale}
+          onReloadAll={handleReloadAll}
+          onShowRaw={() => setShowIcaoRawModal(true)}
+          tabMode={tabMode}
+          notamDataByIcao={notamDataByIcao}
         />
 
         <ProgressBar
-          loadedCount={loadedCount}
+          loadedCount={loadedIcaosSet.size}
           totalIcaos={icaoSet.length}
-          loadingCount={loadingCount}
-          queuedCount={queuedCount}
+          loadingCount={loadingIcaosSet.size}
+          queuedCount={icaoQueue.length}
           autoRefreshCountdown={autoRefreshCountdown}
           batchingActive={batchingActive}
         />
@@ -544,85 +374,59 @@ function App() {
         <IcaoTabs
           icaoSet={icaoSet}
           tabMode={tabMode}
-          onTabClick={handleTabClick}
+          onTabClick={setTabMode}
           notamDataByIcao={notamDataByIcao}
-          hasNewNotams={hasNewNotams}
-          loadedIcaosSet={loadedIcaosSet}
+          newNotamsByIcao={newNotamsByIcao}
         />
 
         <NotamGrid
           tabMode={tabMode}
-          icaoSet={icaoSet}
           notamDataByIcao={notamDataByIcao}
           filters={filters}
           keywordFilter={keywordFilter}
           expandedCardKey={expandedCardKey}
           cardScale={cardScale}
           onCardClick={handleCardClick}
-          onShowRaw={handleShowRaw}
-          isNotamHighlighted={isNotamHighlighted}
-          loadedIcaosSet={loadedIcaosSet}
+          newNotamsByIcao={newNotamsByIcao}
         />
       </main>
 
       <BackToTopButton />
       
       <NotificationSystem
-        notificationCount={notificationCount}
         notifications={notifications}
+        notificationCount={notificationCount}
         showNotificationModal={showNotificationModal}
-        onToggleModal={() => setShowNotificationModal(!showNotificationModal)}
+        setShowNotificationModal={setShowNotificationModal}
+        setNotifications={setNotifications}
+        setNotificationCount={() => setNotifications(prev => prev.map(n => ({...n, read: true})))}
         onNotificationClick={handleNotificationClick}
-        onClearNotifications={() => {
-          setNotifications([]);
-          setNotificationCount(0);
-        }}
       />
 
       {/* Modals */}
-      <RawNotamModal
-        show={showRawModal}
-        onClose={() => setShowRawModal(false)}
-        title={rawModalTitle}
-        content={rawModalContent}
-      />
-
       <IcaoRawModal
         show={showIcaoRawModal}
+        tabMode={tabMode}
+        notamDataByIcao={notamDataByIcao}
         onClose={() => setShowIcaoRawModal(false)}
-        icao={tabMode}
-        notams={tabMode !== "ALL" ? (notamDataByIcao[tabMode] || []) : allNotams}
       />
 
       <SaveSetModal
         show={showSaveSetModal}
-        onClose={() => {
-          setShowSaveSetModal(false);
-          setNewSetName('');
-        }}
-        onSave={(name) => {
-          saveCurrentSetAs(name);
-          setShowSaveSetModal(false);
-          setNewSetName('');
-        }}
-        newSetName={newSetName}
-        setNewSetName={setNewSetName}
-        icaoCount={icaoSet.length}
+        onClose={() => setShowSaveSetModal(false)}
+        onSave={handleSaveSetModalClose}
       />
 
       <IcaoSetsModal
         show={showIcaoSetsModal}
         onClose={() => setShowIcaoSetsModal(false)}
         icaoSets={icaoSets}
-        onLoadSet={(icaos) => {
-          loadIcaoSet(icaos);
-          setShowIcaoSetsModal(false);
-        }}
-        onDeleteSet={(setToDelete) => {
-          const updatedSets = icaoSets.filter(set => set !== setToDelete);
-          setIcaoSets(updatedSets);
-          saveIcaoSets(updatedSets);
-        }}
+        newSetName={newSetName}
+        setNewSetName={setNewSetName}
+        icaoSet={icaoSet}
+        onCreateSet={handleCreateSet}
+        onLoadSet={handleLoadSet}
+        onDeleteSet={handleDeleteSet}
       />
     </div>
   );
