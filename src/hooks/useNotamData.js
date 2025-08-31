@@ -14,6 +14,8 @@ export const useNotamData = ({ icaoSet, activeSession, isInitialized, showNotifi
   const [autoRefreshCountdown, setAutoRefreshCountdown] = useState(AUTO_REFRESH_INTERVAL_MS / 1000);
   const isAutoRefreshing = useRef(false);
 
+  const stableShowNotification = useCallback(showNotification, []);
+
   // Main NOTAM fetching logic, passed to the batching system
   const handleFetchNotams = useCallback(async (icao) => {
     if (!activeSession) return { error: 'Session is not active' };
@@ -23,7 +25,7 @@ export const useNotamData = ({ icaoSet, activeSession, isInitialized, showNotifi
     if (result?.error) {
       console.error(`Error fetching NOTAMs for ${icao}:`, result.error);
       setFailedIcaosSet(prev => new Set(prev).add(icao));
-      showNotification(`Failed to load NOTAMs for ${icao}.`, icao);
+      stableShowNotification(`Failed to load NOTAMs for ${icao}.`, icao);
       return { error: result.error };
     }
 
@@ -36,51 +38,60 @@ export const useNotamData = ({ icaoSet, activeSession, isInitialized, showNotifi
     });
 
     const notams = result.data || [];
-    const comparison = compareNotamSets(icao, notamDataByIcao[icao], notams);
     
-    if (comparison.added.length > 0) {
-      const newNotamInfo = comparison.added.map(n => ({ id: n.id || n.number, timestamp: Date.now() }));
-      setNewNotamsByIcao(prev => ({ ...prev, [icao]: [...(prev[icao] || []), ...newNotamInfo] }));
-      if (!isAutoRefreshing.current) {
-        showNotification(`${icao}: ${comparison.added.length} new NOTAM(s) detected!`, icao);
+    setNotamDataByIcao(prev => {
+      const comparison = compareNotamSets(icao, prev[icao], notams);
+      if (comparison.added.length > 0) {
+        const newNotamInfo = comparison.added.map(n => ({ id: n.id || n.number, timestamp: Date.now() }));
+        setNewNotamsByIcao(p => ({ ...p, [icao]: [...(p[icao] || []), ...newNotamInfo] }));
+        if (!isAutoRefreshing.current) {
+          stableShowNotification(`${icao}: ${comparison.added.length} new NOTAM(s) detected!`, icao);
+        }
       }
-    }
-    
-    if (!isAutoRefreshing.current && comparison.removed.length > 0) {
-      showNotification(`${icao}: ${comparison.removed.length} NOTAM(s) cancelled/expired.`, icao);
-    }
-    
-    setNotamDataByIcao(prev => ({ ...prev, [icao]: notams }));
+      
+      if (!isAutoRefreshing.current && comparison.removed.length > 0) {
+        stableShowNotification(`${icao}: ${comparison.removed.length} NOTAM(s) cancelled/expired.`, icao);
+      }
+      return { ...prev, [icao]: notams };
+    });
+
     setLoadedIcaosSet(prev => new Set(prev).add(icao));
     
     return { data: notams };
-  }, [activeSession, notamDataByIcao, showNotification]);
+  }, [activeSession, stableShowNotification]);
 
   const { icaoQueue, loadingIcaosSet, batchingActive, startBatching, setIcaoQueue } = useBatchingSystem({
     activeSession,
     onFetchNotams: handleFetchNotams,
   });
 
-  // Initial load from cache or queueing all ICAOs
+  // Effect for initial load from cache
   useEffect(() => {
     if (!isInitialized) return;
-
+    
+    console.log("Initializing data source...");
     const cached = getCachedNotamData();
     if (isCacheValid() && cached.notamData) {
       console.log("✅ Loading from valid cache.");
       setNotamDataByIcao(cached.notamData);
       const cachedIcaos = new Set(Object.keys(cached.notamData));
       setLoadedIcaosSet(cachedIcaos);
-      const icaosToQueue = icaoSet.filter(icao => !cachedIcaos.has(icao));
-      if (icaosToQueue.length > 0) startBatching(icaosToQueue);
     } else {
-      console.log("Cache is invalid or empty, queueing all saved ICAOs.");
+      console.log("Cache is invalid or empty.");
       setNotamDataByIcao({});
       setLoadedIcaosSet(new Set());
       setFailedIcaosSet(new Set());
-      startBatching([...icaoSet]);
     }
-  }, [isInitialized, icaoSet, startBatching]);
+  }, [isInitialized]);
+
+  // Effect to queue ICAOs that are not loaded
+  useEffect(() => {
+    if (!isInitialized) return;
+    const icaosToQueue = icaoSet.filter(icao => !loadedIcaosSet.has(icao) && !loadingIcaosSet.has(icao));
+    if (icaosToQueue.length > 0) {
+      startBatching(icaosToQueue);
+    }
+  }, [isInitialized, icaoSet, loadedIcaosSet, loadingIcaosSet, startBatching]);
   
   // Cache NOTAM data when it changes
   useEffect(() => {
