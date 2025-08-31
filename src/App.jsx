@@ -284,14 +284,12 @@ function App() {
       if (savedIcaos.length > 0) {
         setIcaoSet(savedIcaos);
         const cachedData = getCachedNotamData();
-        const cacheIsValid = isCacheValid();
-
-        if (cacheIsValid && cachedData.notamData) {
+        
+        if (isCacheValid() && cachedData.notamData) {
           console.log("✅ Loading from valid cache.");
           setNotamDataByIcao(cachedData.notamData);
           const cachedIcaos = new Set(Object.keys(cachedData.notamData));
           setLoadedIcaosSet(cachedIcaos);
-          // Queue only ICAOs that are in the saved set but not in the valid cache
           const icaosToQueue = savedIcaos.filter(icao => !cachedIcaos.has(icao));
           if (icaosToQueue.length > 0) {
             setIcaoQueue(icaosToQueue);
@@ -306,7 +304,8 @@ function App() {
     } finally {
       setIsInitialized(true);
     }
-  }, [setIcaoQueue]); // This should only run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // This should only run once on mount
 
   // Cache NOTAM data when it changes
   useEffect(() => {
