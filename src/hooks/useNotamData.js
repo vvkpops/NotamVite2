@@ -1,105 +1,176 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useBatchingSystem } from './useBatchingSystem';
 import { fetchNotamsForIcao } from '../services/notamService';
 import { getCachedNotamData, setCachedNotamData, isCacheValid } from '../utils/storageUtils';
-import { compareNotamSets } from '../utils/notamUtils';
-import { AUTO_REFRESH_INTERVAL_MS, NEW_NOTAM_HIGHLIGHT_DURATION_MS } from '../constants';
+import { compareNotamSets }s from '../utils/notamUtils';
+import { AUTO_REFRESH_INTERVAL_MS, BATCH_INTERVAL_MS, NEW_NOTAM_HIGHLIGHT_DURATION_MS } from '../constants';
 
 export const useNotamData = ({ icaoSet, activeSession, isInitialized, showNotification }) => {
   const [notamDataByIcao, setNotamDataByIcao] = useState({});
-  const [loadedIcaosSet, setLoadedIcaosSet] = useState(new Set());
-  const [failedIcaosSet, setFailedIcaosSet] = useState(new Set());
+  const [icaoStatus, setIcaoStatus] = useState({}); // e.g. { KJFK: 'loaded', KLAX: 'loading' }
   const [newNotamsByIcao, setNewNotamsByIcao] = useState({});
-
   const [autoRefreshCountdown, setAutoRefreshCountdown] = useState(AUTO_REFRESH_INTERVAL_MS / 1000);
-  const isAutoRefreshing = useRef(false);
+
+  const queueRef = useRef([]);
+  const isProcessingRef = useRef(false);
+  const isAutoRefreshingRef = useRef(false);
+  const retryCountsRef = useRef({});
 
   const stableShowNotification = useCallback(showNotification, []);
 
-  // Main NOTAM fetching logic, passed to the batching system
-  const handleFetchNotams = useCallback(async (icao) => {
-    if (!activeSession) return { error: 'Session is not active' };
-    
+  // The core function to process a single ICAO
+  const fetchAndProcessIcao = useCallback(async (icao) => {
+    if (!activeSession) return;
+
+    setIcaoStatus(prev => ({ ...prev, [icao]: 'loading' }));
+
     const result = await fetchNotamsForIcao(icao);
-    
+
+    // Handle fetch failure
     if (result?.error) {
-      console.error(`Error fetching NOTAMs for ${icao}:`, result.error);
-      setFailedIcaosSet(prev => new Set(prev).add(icao));
-      stableShowNotification(`Failed to load NOTAMs for ${icao}.`, icao);
-      return { error: result.error };
+      const retries = (retryCountsRef.current[icao] || 0) + 1;
+      if (retries < 3) {
+        retryCountsRef.current[icao] = retries;
+        console.warn(`[Fetcher] Re-queueing ${icao} (attempt ${retries}) due to error:`, result.error);
+        queueRef.current.push(icao); // Add to back of the queue
+      } else {
+        console.error(`[Fetcher] ICAO ${icao} failed after 3 attempts. Giving up.`);
+        setIcaoStatus(prev => ({ ...prev, [icao]: 'failed' }));
+        stableShowNotification(`Failed to load NOTAMs for ${icao}.`, icao);
+      }
+      return;
     }
 
-    // On success, remove from failed set if it was there
-    setFailedIcaosSet(prev => {
-      if (!prev.has(icao)) return prev;
-      const newSet = new Set(prev);
-      newSet.delete(icao);
-      return newSet;
-    });
-
+    // Handle fetch success
+    retryCountsRef.current[icao] = 0; // Reset retry count on success
     const notams = result.data || [];
-    
-    setNotamDataByIcao(prev => {
-      const comparison = compareNotamSets(icao, prev[icao], notams);
+
+    setNotamDataByIcao(prevData => {
+      const comparison = compareNotamSets(icao, prevData[icao], notams);
       if (comparison.added.length > 0) {
         const newNotamInfo = comparison.added.map(n => ({ id: n.id || n.number, timestamp: Date.now() }));
         setNewNotamsByIcao(p => ({ ...p, [icao]: [...(p[icao] || []), ...newNotamInfo] }));
-        if (!isAutoRefreshing.current) {
+        if (!isAutoRefreshingRef.current) {
           stableShowNotification(`${icao}: ${comparison.added.length} new NOTAM(s) detected!`, icao);
         }
       }
-      
-      if (!isAutoRefreshing.current && comparison.removed.length > 0) {
-        stableShowNotification(`${icao}: ${comparison.removed.length} NOTAM(s) cancelled/expired.`, icao);
-      }
-      return { ...prev, [icao]: notams };
+      return { ...prevData, [icao]: notams };
     });
 
-    setLoadedIcaosSet(prev => new Set(prev).add(icao));
-    
-    return { data: notams };
+    setIcaoStatus(prev => ({ ...prev, [icao]: 'loaded' }));
+
   }, [activeSession, stableShowNotification]);
 
-  const { icaoQueue, loadingIcaosSet, batchingActive, startBatching, setIcaoQueue } = useBatchingSystem({
-    activeSession,
-    onFetchNotams: handleFetchNotams,
-  });
+
+  // The loop that processes the queue
+  const processQueue = useCallback(async () => {
+    if (isProcessingRef.current || queueRef.current.length === 0) {
+      isProcessingRef.current = false;
+      return;
+    }
+
+    isProcessingRef.current = true;
+    const icaoToProcess = queueRef.current.shift();
+
+    if (icaoToProcess) {
+      await fetchAndProcessIcao(icaoToProcess);
+    }
+    
+    // Schedule the next run
+    setTimeout(() => {
+      isProcessingRef.current = false;
+      processQueue();
+    }, BATCH_INTERVAL_MS);
+
+  }, [fetchAndProcessIcao]);
+
+  // Effect to queue ICAOs when the `icaoSet` changes
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    const newIcaos = icaoSet.filter(icao => !(icao in icaoStatus));
+    if (newIcaos.length > 0) {
+      setIcaoStatus(prev => {
+        const newStatuses = { ...prev };
+        newIcaos.forEach(icao => { newStatuses[icao] = 'queued' });
+        return newStatuses;
+      });
+      queueRef.current.push(...newIcaos);
+      if (!isProcessingRef.current) {
+        processQueue();
+      }
+    }
+    
+    // Remove statuses for ICAOs that are no longer in the set
+    setIcaoStatus(prev => {
+        const nextStatus = {};
+        icaoSet.forEach(icao => {
+            if(prev[icao]) nextStatus[icao] = prev[icao];
+        });
+        return nextStatus;
+    });
+
+  }, [isInitialized, icaoSet, processQueue]);
+
 
   // Effect for initial load from cache
   useEffect(() => {
     if (!isInitialized) return;
     
-    console.log("Initializing data source...");
     const cached = getCachedNotamData();
     if (isCacheValid() && cached.notamData) {
       console.log("✅ Loading from valid cache.");
       setNotamDataByIcao(cached.notamData);
-      const cachedIcaos = new Set(Object.keys(cached.notamData));
-      setLoadedIcaosSet(cachedIcaos);
-    } else {
-      console.log("Cache is invalid or empty.");
-      setNotamDataByIcao({});
-      setLoadedIcaosSet(new Set());
-      setFailedIcaosSet(new Set());
+      const cachedIcaos = Object.keys(cached.notamData);
+      setIcaoStatus(prev => {
+          const newStatuses = {...prev};
+          cachedIcaos.forEach(icao => { newStatuses[icao] = 'loaded' });
+          return newStatuses;
+      });
     }
   }, [isInitialized]);
 
-  // Effect to queue ICAOs that are not loaded
+  // Effect to cache data when it changes
   useEffect(() => {
-    if (!isInitialized) return;
-    const icaosToQueue = icaoSet.filter(icao => !loadedIcaosSet.has(icao) && !loadingIcaosSet.has(icao));
-    if (icaosToQueue.length > 0) {
-      startBatching(icaosToQueue);
+    if (Object.keys(notamDataByIcao).length > 0) {
+      setCachedNotamData({ notamData: notamDataByIcao, timestamp: Date.now() });
     }
-  }, [isInitialized, icaoSet, loadedIcaosSet, loadingIcaosSet, startBatching]);
-  
-  // Cache NOTAM data when it changes
-  useEffect(() => {
-    if (!isInitialized || Object.keys(notamDataByIcao).length === 0) return;
-    setCachedNotamData({ notamData: notamDataByIcao, timestamp: Date.now() });
-  }, [notamDataByIcao, isInitialized]);
+  }, [notamDataByIcao]);
 
-  // Cleanup effect for old "new notam" indicators
+  // Effect for the auto-refresh timer
+  useEffect(() => {
+    if (!activeSession || icaoSet.length === 0) return;
+
+    const performAutoRefresh = () => {
+      console.log('🔄 Performing auto-refresh...');
+      isAutoRefreshingRef.current = true;
+      retryCountsRef.current = {}; // Reset all retry counts
+      
+      setIcaoStatus(prev => {
+        const newStatuses = {};
+        icaoSet.forEach(icao => { newStatuses[icao] = 'queued' });
+        return newStatuses;
+      });
+      
+      queueRef.current.push(...icaoSet);
+      if (!isProcessingRef.current) {
+        processQueue();
+      }
+
+      setTimeout(() => { isAutoRefreshingRef.current = false; }, 5000);
+    };
+
+    const refreshInterval = setInterval(performAutoRefresh, AUTO_REFRESH_INTERVAL_MS);
+    const countdownInterval = setInterval(() => {
+      setAutoRefreshCountdown(prev => (prev > 0 ? prev - 1 : AUTO_REFRESH_INTERVAL_MS / 1000));
+    }, 1000);
+
+    return () => {
+      clearInterval(refreshInterval);
+      clearInterval(countdownInterval);
+    };
+  }, [activeSession, icaoSet, processQueue]);
+  
+  // Cleanup for old "new notam" highlights
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
@@ -114,50 +185,39 @@ export const useNotamData = ({ icaoSet, activeSession, isInitialized, showNotifi
     }, 10000);
     return () => clearInterval(interval);
   }, []);
-  
-  // Auto-refresh timer
-  useEffect(() => {
-    if (!activeSession || icaoSet.length === 0 || !isInitialized) return;
 
-    const performAutoRefresh = () => {
-      console.log('🔄 Performing auto-refresh...');
-      isAutoRefreshing.current = true;
-      const refreshIcaos = [...icaoSet].filter(icao => !loadingIcaosSet.has(icao));
-      if (refreshIcaos.length > 0) {
-        refreshIcaos.forEach(icao => handleFetchNotams(icao));
-      }
-      setTimeout(() => { isAutoRefreshing.current = false; }, 5000);
-    };
-
-    const refreshInterval = setInterval(performAutoRefresh, AUTO_REFRESH_INTERVAL_MS);
-    const countdownInterval = setInterval(() => {
-      setAutoRefreshCountdown(prev => (prev > 0 ? prev - 1 : AUTO_REFRESH_INTERVAL_MS / 1000));
-    }, 1000);
-
-    return () => {
-      clearInterval(refreshInterval);
-      clearInterval(countdownInterval);
-    };
-  }, [activeSession, icaoSet, isInitialized, loadingIcaosSet, handleFetchNotams]);
-
-  const handleReloadAll = () => {
+  const handleReloadAll = useCallback(() => {
     if (!icaoSet.length) return;
     console.log('🔄 Manual reload all triggered');
     setCachedNotamData(null); // Invalidate cache
+    isAutoRefreshingRef.current = false; // Treat as a manual load
+    retryCountsRef.current = {};
+    queueRef.current = [];
+
     setNotamDataByIcao({});
-    setLoadedIcaosSet(new Set());
-    setFailedIcaosSet(new Set());
-    setIcaoQueue([]); // Clear existing queue
-    startBatching([...icaoSet]);
-  };
+    const newStatuses = {};
+    icaoSet.forEach(icao => { newStatuses[icao] = 'queued' });
+    setIcaoStatus(newStatuses);
+
+    queueRef.current.push(...icaoSet);
+    if (!isProcessingRef.current) {
+      processQueue();
+    }
+  }, [icaoSet, processQueue]);
+
+  // Derive counts for the progress bar from the status object
+  const loadedCount = Object.values(icaoStatus).filter(s => s === 'loaded').length;
+  const loadingCount = Object.values(icaoStatus).filter(s => s === 'loading').length;
+  const failedCount = Object.values(icaoStatus).filter(s => s === 'failed').length;
+  const queuedCount = queueRef.current.length;
 
   return {
     notamDataByIcao: { ...notamDataByIcao, newNotamsByIcao },
-    loadingIcaosSet,
-    loadedIcaosSet,
-    failedIcaosSet,
-    icaoQueue,
-    batchingActive,
+    loadingIcaosSet: new Set(Object.keys(icaoStatus).filter(k => icaoStatus[k] === 'loading')),
+    loadedIcaosSet: new Set(Object.keys(icaoStatus).filter(k => icaoStatus[k] === 'loaded')),
+    failedIcaosSet: new Set(Object.keys(icaoStatus).filter(k => icaoStatus[k] === 'failed')),
+    icaoQueue: queueRef.current,
+    batchingActive: isProcessingRef.current || queueRef.current.length > 0,
     autoRefreshCountdown,
     handleReloadAll,
   };
