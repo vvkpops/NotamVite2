@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
 // Components
@@ -26,8 +26,7 @@ import {
   setCachedNotamData 
 } from './utils/storageUtils';
 import { 
-  compareNotamSets,
-  parseDate
+  compareNotamSets
 } from './utils/notamUtils';
 
 // Hooks
@@ -42,7 +41,6 @@ import {
 function App() {
   // Core state
   const [icaoSet, setIcaoSet] = useState([]);
-  const [icaoInput, setIcaoInput] = useState('');
   const [notamDataByIcao, setNotamDataByIcao] = useState({});
   const [loadedIcaosSet, setLoadedIcaosSet] = useState(new Set());
   const [loadingIcaosSet, setLoadingIcaosSet] = useState(new Set());
@@ -74,18 +72,6 @@ function App() {
 
   // Session management and batching
   const { activeSession } = useSessionManagement();
-  const { 
-    icaoQueue, 
-    setIcaoQueue,
-    batchingActive, 
-    startBatching,
-  } = useBatchingSystem({
-    activeSession,
-    loadedIcaosSet,
-    loadingIcaosSet,
-    setLoadingIcaosSet,
-    onFetchNotams: handleFetchNotams
-  });
 
   const showNotification = useCallback((text, icao) => {
     const newNotification = {
@@ -99,7 +85,7 @@ function App() {
   }, []);
 
   // Main NOTAM fetching logic
-  async function handleFetchNotams(icao, isAutoRefresh = false) {
+  const handleFetchNotams = useCallback(async (icao, isAutoRefresh = false) => {
     if (!activeSession) return { error: true };
     
     try {
@@ -142,7 +128,20 @@ function App() {
       console.error(`Unhandled error fetching for ${icao}:`, error);
       return { error: error.message };
     }
-  }
+  }, [activeSession, notamDataByIcao, showNotification]);
+
+  const { 
+    icaoQueue, 
+    setIcaoQueue,
+    batchingActive, 
+    startBatching,
+  } = useBatchingSystem({
+    activeSession,
+    loadedIcaosSet,
+    loadingIcaosSet,
+    setLoadingIcaosSet,
+    onFetchNotams: handleFetchNotams
+  });
 
   // Effect for auto-refresh
   useEffect(() => {
@@ -166,7 +165,7 @@ function App() {
       clearInterval(refreshInterval);
       clearInterval(countdownInterval);
     };
-  }, [activeSession, icaoSet, loadedIcaosSet, loadingIcaosSet]);
+  }, [activeSession, icaoSet, loadedIcaosSet, loadingIcaosSet, handleFetchNotams]);
 
   // Cleanup effect for old "new" notam indicators
   useEffect(() => {
@@ -296,7 +295,7 @@ function App() {
     } catch (e) {
       console.error('Failed to load saved data:', e);
     }
-  }, []);
+  }, [setIcaoQueue]);
 
   // Cache NOTAM data when it changes
   useEffect(() => {
@@ -316,12 +315,7 @@ function App() {
   }, [icaoQueue.length, batchingActive, activeSession, startBatching]);
 
   if (!activeSession) {
-    return (
-        <div style={{textAlign: 'center', marginTop: '20vh', color: '#e2e8f0', fontFamily: 'Inter, sans-serif'}}>
-            <h1>Session Inactive</h1>
-            <p>Another NOTAM Dashboard tab is active. Please close it to use this one.</p>
-        </div>
-    );
+    return null; // The session management hook will render the inactive message
   }
 
   const notificationCount = notifications.filter(n => !n.read).length;
@@ -332,8 +326,6 @@ function App() {
       
       <main className="container mx-auto p-4">
         <IcaoInput
-          icaoInput={icaoInput}
-          setIcaoInput={setIcaoInput}
           icaoSet={icaoSet}
           setIcaoListExpanded={setIcaoListExpanded}
           icaoListExpanded={icaoListExpanded}
@@ -399,7 +391,6 @@ function App() {
         showNotificationModal={showNotificationModal}
         setShowNotificationModal={setShowNotificationModal}
         setNotifications={setNotifications}
-        setNotificationCount={() => setNotifications(prev => prev.map(n => ({...n, read: true})))}
         onNotificationClick={handleNotificationClick}
       />
 
