@@ -29,6 +29,7 @@ export const BATCH_SIZE = 1; // Process one at a time to avoid rate limits
 export const BATCH_INTERVAL_MS = 3000; // 3 second intervals between requests
 export const CALLS_PER_WINDOW = 25; // Conservative limit
 export const WINDOW_MS = 65000; // 65 second window
+export const MAX_RETRIES = 3; // Max retries for a failing ICAO
 
 // NOTAM Types and titles
 export const NOTAM_TYPES = {
@@ -141,25 +142,6 @@ export const ERROR_MESSAGES = {
   STORAGE_ERROR: 'Failed to save data to local storage.'
 };
 
-// Success Messages
-export const SUCCESS_MESSAGES = {
-  NOTAMS_LOADED: 'NOTAMs loaded successfully',
-  SET_SAVED: 'ICAO set saved successfully',
-  SET_DELETED: 'ICAO set deleted successfully',
-  SET_LOADED: 'ICAO set loaded successfully',
-  DATA_EXPORTED: 'Data exported successfully',
-  DATA_IMPORTED: 'Data imported successfully',
-  CACHE_CLEARED: 'Cache cleared successfully'
-};
-
-// Status Types
-export const STATUS_TYPES = {
-  LOADING: 'loading',
-  SUCCESS: 'success',
-  ERROR: 'error',
-  IDLE: 'idle'
-};
-
 // NOTAM Priorities (for sorting)
 export const NOTAM_PRIORITIES = {
   rwy: 1,      // Highest priority
@@ -170,90 +152,4 @@ export const NOTAM_PRIORITIES = {
   fuel: 6,
   other: 7,
   cancelled: 8  // Lowest priority
-};
-
-// Session Management
-export const SESSION_CONFIG = {
-  CHANNEL_NAME: 'notamDashboardSession',
-  HEARTBEAT_INTERVAL: 5000, // 5 seconds
-  SESSION_TIMEOUT: 30000 // 30 seconds
-};
-
-// Feature Flags (for enabling/disabling features)
-export const FEATURE_FLAGS = {
-  ENABLE_NOTIFICATIONS: true,
-  ENABLE_AUTO_REFRESH: true,
-  ENABLE_CACHING: true,
-  ENABLE_EXPORT: true,
-  ENABLE_DARK_MODE: true,
-  ENABLE_SESSION_MANAGEMENT: true,
-  ENABLE_KEYBOARD_SHORTCUTS: true
-};
-
-// Keyboard Shortcuts
-export const KEYBOARD_SHORTCUTS = {
-  RELOAD_ALL: 'r',
-  TOGGLE_FILTERS: 'f',
-  CLEAR_NOTIFICATIONS: 'c',
-  FOCUS_SEARCH: '/',
-  TOGGLE_CARD_SIZE: 's'
-};
-
-// Animation Durations (in milliseconds)
-export const ANIMATION_DURATIONS = {
-  CARD_HOVER: 200,
-  MODAL_OPEN: 300,
-  NOTIFICATION_SLIDE: 250,
-  TAB_SWITCH: 150,
-  LOADING_FADE: 400
-};
-
-// Color Palette
-export const COLORS = {
-  PRIMARY: '#06b6d4',      // Cyan
-  SECONDARY: '#8b5cf6',    // Purple
-  SUCCESS: '#10b981',      // Emerald
-  WARNING: '#f59e0b',      // Amber
-  ERROR: '#ef4444',        // Red
-  INFO: '#3b82f6',         // Blue
-  DARK: '#1e293b',         // Slate
-  LIGHT: '#e2e8f0'         // Slate light
-};
-
-// Responsive Breakpoints
-export const BREAKPOINTS = {
-  MOBILE: '480px',
-  TABLET: '768px',
-  DESKTOP: '1024px',
-  WIDE: '1280px'
-};
-
-// Export all constants as default for convenience
-export default {
-  ICAO_CLASSIFICATION_MAP,
-  AUTO_REFRESH_INTERVAL_MS,
-  NEW_NOTAM_HIGHLIGHT_DURATION_MS,
-  BATCH_SIZE,
-  BATCH_INTERVAL_MS,
-  CALLS_PER_WINDOW,
-  WINDOW_MS,
-  NOTAM_TYPES,
-  HEAD_COLOR_STYLES,
-  TIME_STATUS_STYLES,
-  FILTER_LABELS,
-  DEFAULT_FILTERS,
-  API_CONFIG,
-  UI_CONSTANTS,
-  STORAGE_KEYS,
-  DATE_FORMATS,
-  ERROR_MESSAGES,
-  SUCCESS_MESSAGES,
-  STATUS_TYPES,
-  NOTAM_PRIORITIES,
-  SESSION_CONFIG,
-  FEATURE_FLAGS,
-  KEYBOARD_SHORTCUTS,
-  ANIMATION_DURATIONS,
-  COLORS,
-  BREAKPOINTS
 };
