@@ -1,95 +1,159 @@
-// src/utils/cfpsParser.cjs - V3 - Robust and Defensive Parser
+import { NOTAM_PRIORITIES, NOTAM_TYPES, ICAO_CLASSIFICATION_MAP, NEW_NOTAM_HIGHLIGHT_DURATION_MS } from '../constants';
 
-function normalizeDateFromText(text) {
+// --- Type and Classification Helpers ---
+
+/**
+ * Determines the primary type of a NOTAM based on its content.
+ * This is used for sorting and styling.
+ */
+export const getNotamType = (notam) => {
+  if (!notam || !notam.body) return 'other';
+  const text = notam.body.toUpperCase();
+
+  if (text.includes('CANCELLED') || text.includes('REPLACED')) return 'cancelled';
+  if (/\b(RWY|RUNWAY)\b.*\b(CLSD|CLOSED)\b/.test(text)) return 'rwy';
+  if (/\b(TWY|TAXIWAY)\b.*\b(CLSD|CLOSED)\b/.test(text)) return 'twy';
+  if (/\b(RSC|RUNWAY SURFACE CONDITION)\b/.test(text)) return 'rsc';
+  if (/\bCRFI\b/.test(text)) return 'crfi';
+  if (/\b(ILS|GLIDE PATH|GP|LOC|LOCALIZER)\b/.test(text)) return 'ils';
+  if (/\b(FUEL|AVGAS|JET)\b/.test(text)) return 'fuel';
+  
+  return 'other';
+};
+
+export const getHeadClass = (notam) => `head-${getNotamType(notam)}`;
+
+export const getHeadTitle = (notam) => NOTAM_TYPES[getNotamType(notam)] || 'GENERAL NOTAM';
+
+export const getClassificationTitle = (classification) => {
+    if (!classification) return "Other";
+    const code = classification.trim().toUpperCase();
+    return ICAO_CLASSIFICATION_MAP[code] || classification;
+};
+
+// --- Sorting and Filtering ---
+
+/**
+ * Sorts an array of NOTAMs based on priority and then date.
+ */
+export const sortNotams = (notams) => {
+  return notams.sort((a, b) => {
+    const priorityA = NOTAM_PRIORITIES[getNotamType(a)] || 99;
+    const priorityB = NOTAM_PRIORITIES[getNotamType(b)] || 99;
+
+    if (priorityA !== priorityB) {
+      return priorityA - priorityB;
+    }
+
+    // If priorities are the same, sort by most recent validFrom date
+    try {
+      return new Date(b.validFrom) - new Date(a.validFrom);
+    } catch {
+      return 0;
+    }
+  });
+};
+
+/**
+ * Applies all active filters to a list of NOTAMs.
+ */
+export const applyNotamFilters = (notams, filters, keyword) => {
+  const lowerKeyword = keyword.toLowerCase();
+
+  return notams.filter(notam => {
+    const type = getNotamType(notam);
+
+    // Type filters
+    if (!filters[type]) return false;
+    
+    // Time filters
+    const isCurrent = isNotamCurrent(notam);
+    const isFuture = isNotamFuture(notam);
+    if (!filters.current && isCurrent) return false;
+    if (!filters.future && isFuture) return false;
+    if (!isCurrent && !isFuture && (filters.current || filters.future)) return false;
+
+    // Keyword filter
+    if (lowerKeyword) {
+      const content = `${notam.body} ${notam.number} ${notam.icao}`.toLowerCase();
+      if (!content.includes(lowerKeyword)) {
+        return false;
+      }
+    }
+    
+    // DOM filter (Placeholder for future implementation)
+    // if (filters.dom && !notam.isDomestic) return false;
+
+    return true;
+  });
+};
+
+// --- Time and Date Helpers ---
+
+export const isNotamCurrent = (notam) => {
+  if (!notam.validFrom) return true; // Assume current if no start date
+  const now = new Date();
+  const from = new Date(notam.validFrom);
+  const to = notam.validTo ? new Date(notam.validTo) : null;
+  return from <= now && (!to || to >= now);
+};
+
+export const isNotamFuture = (notam) => {
+  if (!notam.validFrom) return false;
+  const now = new Date();
+  const from = new Date(notam.validFrom);
+  return from > now;
+};
+
+// --- UI and Display Helpers ---
+
+/**
+ * Extracts runway designators (e.g., 06L/24R) from NOTAM text.
+ */
+export const extractRunways = (text) => {
   if (!text) return '';
-  // Look for YYMMDDHHMM format, which is very common
-  const match = text.match(/(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
-  if (match) {
-    const [, year, month, day, hour, minute] = match;
-    const fullYear = `20${year}`;
-    // Basic validation
-    if (parseInt(month) <= 12 && parseInt(day) <= 31) {
-      return new Date(`${fullYear}-${month}-${day}T${hour}:${minute}:00Z`).toISOString();
-    }
+  const rwyMatches = [];
+  const regex = /\b(RWY|RUNWAY)\s*(\d{2,3}(?:[LRC])?(?:\/\d{2,3}(?:[LRC])?)*)/gi;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    rwyMatches.push(match[2]);
   }
-  return '';
-}
+  return [...new Set(rwyMatches)].join(', ');
+};
 
-function parseNotamText(rawText) {
-  const lines = rawText.split('\n').map(l => l.trim());
-  let content = '';
-  let validFrom = '';
-  let validTo = '';
-  let number = '';
+/**
+ * Checks if a NOTAM's content is too long to fit in the card, requiring an expand button.
+ */
+export const needsExpansion = (summary, body, scale) => {
+    // Estimate lines based on characters. A line is roughly 50-60 chars.
+    const charLimit = (280 / 20) * 55 / scale; // (CardHeight / LineHeight) * CharsPerLine / Scale
+    return body.length > charLimit;
+};
 
-  const notamNumberMatch = rawText.match(/([A-Z]\d{4}\/\d{2})/);
-  if (notamNumberMatch) {
-    number = notamNumberMatch[1];
-  }
+/**
+ * Checks if a NOTAM should be highlighted as new.
+ */
+export const isNewNotam = (notam, newNotamsByIcao) => {
+    if (!newNotamsByIcao || !notam || !notam.icao) return false;
+    const newNotamsForIcao = newNotamsByIcao[notam.icao] || [];
+    const now = Date.now();
+    return newNotamsForIcao.some(n => 
+        n.id === notam.id && (now - n.timestamp < NEW_NOTAM_HIGHLIGHT_DURATION_MS)
+    );
+};
 
-  for (const line of lines) {
-    if (line.startsWith('E)')) {
-      content += line.substring(2).trim() + ' ';
-    } else if (line.startsWith('B)')) {
-      validFrom = normalizeDateFromText(line);
-    } else if (line.startsWith('C)')) {
-      validTo = normalizeDateFromText(line);
-    }
-  }
 
-  // If E) line was not found, use the whole text as content
-  if (!content) {
-    content = lines.join(' ').replace(/\s+/g, ' ');
-  }
+// --- Data Comparison ---
 
-  return {
-    summary: content.slice(0, 250), // Create a summary
-    body: content,
-    validFrom,
-    validTo,
-    number,
-  };
-}
+/**
+ * Compares two sets of NOTAMs for an ICAO and identifies added/removed ones.
+ */
+export const compareNotamSets = (icao, oldNotams = [], newNotams = []) => {
+    const oldIds = new Set((oldNotams || []).map(n => n.id));
+    const newIds = new Set((newNotams || []).map(n => n.id));
 
-function normalizeCFPSNotam(item, icao, index) {
-  try {
-    // The 'raw' or 'text' field from NAVCAN is the most reliable source
-    const rawText = item.raw || item.text || '';
-    
-    if (!rawText) {
-        console.warn(`[CFPS Parser] Skipping item for ${icao} due to empty content.`);
-        return null;
-    }
+    const added = (newNotams || []).filter(n => !oldIds.has(n.id));
+    const removed = (oldNotams || []).filter(n => !newIds.has(n.id));
 
-    const parsed = parseNotamText(rawText);
-    
-    const validFrom = parsed.validFrom || normalizeDateFromText(item.start) || new Date().toISOString();
-    const validTo = parsed.validTo || normalizeDateFromText(item.end) || '';
-
-    const number = parsed.number || item.id || `NVCAN-${index}`;
-    const id = `${icao}-${number}`;
-
-    return {
-      id,
-      number: number,
-      type: 'A', // NAVCAN doesn't provide a clear type, default to 'A' (New)
-      classification: 'NAVCAN',
-      icao: icao.toUpperCase(),
-      location: icao.toUpperCase(),
-      validFrom,
-      validTo,
-      summary: parsed.summary || 'Content not available.',
-      body: parsed.body || 'Content not available.',
-      qLine: '', // NAVCAN does not provide a standard Q-Line
-      issued: validFrom,
-      source: 'NAVCAN',
-    };
-  } catch (error) {
-    console.error(`[CFPS Parser] Error normalizing NAVCAN NOTAM for ${icao}:`, error);
-    return null;
-  }
-}
-
-module.exports = {
-  normalizeCFPSNotam
+    return { added, removed };
 };
