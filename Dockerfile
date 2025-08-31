@@ -1,37 +1,27 @@
-# Stage 1: builder
+# Stage 1: Build the React app
 FROM node:18-alpine AS builder
-
 WORKDIR /app
-
-# Install build deps
 COPY package*.json ./
-RUN npm ci
-
-# Copy source and build
+RUN npm install
 COPY . .
 RUN npm run build
 
-# Stage 2: runtime
-FROM node:18-alpine AS runner
-
+# Stage 2: Create the production image
+FROM node:18-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Install only production dependencies
+# Copy only necessary files from builder stage and package.json for production dependencies
 COPY package*.json ./
-RUN npm ci --omit=dev
-
-# Copy built app and server files
+RUN npm install --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY server.cjs ./
-# If you rely on config.json in container, copy it (or better: use env vars)
-COPY config.json ./
+COPY src/utils/cfpsParser.cjs ./src/utils/cfpsParser.cjs
+# If you use config.json, uncomment the next line
+# COPY config.json ./
 
-# Expose port
-EXPOSE ${PORT:-3001}
+# Expose the port the app runs on
+EXPOSE 3001
 
-# Healthcheck (optional)
-HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=6 \
-  CMD wget -qO- --timeout=3 http://127.0.0.1:${PORT:-3001}/ping || exit 1
-
+# Command to run the application
 CMD ["node", "server.cjs"]
