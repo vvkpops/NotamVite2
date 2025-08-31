@@ -185,8 +185,8 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// Centralized CFPS Parser from `cfpsParser.js`
-const { normalizeCFPSNotam } = require('./src/utils/cfpsParser.js');
+// Centralized CFPS Parser from `cfpsParser.cjs`
+const { normalizeCFPSNotam } = require('./src/utils/cfpsParser.cjs');
 
 async function fetchNavCanadaNotamsServerSide(icao) {
   const upperIcao = (icao || '').toUpperCase();
