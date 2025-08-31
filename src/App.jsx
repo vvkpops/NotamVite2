@@ -23,7 +23,8 @@ import {
   getSavedIcaos, 
   saveIcaos,
   getCachedNotamData,
-  setCachedNotamData 
+  setCachedNotamData,
+  isCacheValid
 } from './utils/storageUtils';
 import { 
   compareNotamSets
@@ -40,6 +41,7 @@ import {
 
 function App() {
   // Core state
+  const [isInitialized, setIsInitialized] = useState(false);
   const [icaoSet, setIcaoSet] = useState([]);
   const [notamDataByIcao, setNotamDataByIcao] = useState({});
   const [loadedIcaosSet, setLoadedIcaosSet] = useState(new Set());
@@ -145,7 +147,7 @@ function App() {
 
   // Effect for auto-refresh
   useEffect(() => {
-    if (!activeSession || icaoSet.length === 0) return;
+    if (!activeSession || icaoSet.length === 0 || !isInitialized) return;
     
     const performAutoRefresh = () => {
       console.log('🔄 Performing auto-refresh...');
@@ -165,7 +167,7 @@ function App() {
       clearInterval(refreshInterval);
       clearInterval(countdownInterval);
     };
-  }, [activeSession, icaoSet, loadedIcaosSet, loadingIcaosSet, handleFetchNotams]);
+  }, [activeSession, icaoSet, loadedIcaosSet, loadingIcaosSet, handleFetchNotams, isInitialized]);
 
   // Cleanup effect for old "new" notam indicators
   useEffect(() => {
@@ -276,43 +278,53 @@ function App() {
     try {
       const savedIcaos = getSavedIcaos();
       const savedSets = getIcaoSets();
-      const cachedData = getCachedNotamData();
       
       setIcaoSets(Array.isArray(savedSets) ? savedSets : []);
       
       if (savedIcaos.length > 0) {
         setIcaoSet(savedIcaos);
-        if (cachedData.notamData && Object.keys(cachedData.notamData).length > 0 && (Date.now() - (cachedData.timestamp || 0) < AUTO_REFRESH_INTERVAL_MS)) {
+        const cachedData = getCachedNotamData();
+        const cacheIsValid = isCacheValid();
+
+        if (cacheIsValid && cachedData.notamData) {
+          console.log("✅ Loading from valid cache.");
           setNotamDataByIcao(cachedData.notamData);
-          const cachedIcaos = Object.keys(cachedData.notamData);
-          setLoadedIcaosSet(new Set(cachedIcaos));
-          const icaosToQueue = savedIcaos.filter(icao => !cachedIcaos.includes(icao));
-          if (icaosToQueue.length > 0) setIcaoQueue(icaosToQueue);
+          const cachedIcaos = new Set(Object.keys(cachedData.notamData));
+          setLoadedIcaosSet(cachedIcaos);
+          // Queue only ICAOs that are in the saved set but not in the valid cache
+          const icaosToQueue = savedIcaos.filter(icao => !cachedIcaos.has(icao));
+          if (icaosToQueue.length > 0) {
+            setIcaoQueue(icaosToQueue);
+          }
         } else {
+          console.log(" Cache is invalid or empty, queueing all saved ICAOs.");
           setIcaoQueue(savedIcaos);
         }
       }
     } catch (e) {
       console.error('Failed to load saved data:', e);
+    } finally {
+      setIsInitialized(true);
     }
-  }, [setIcaoQueue]);
+  }, [setIcaoQueue]); // This should only run once on mount
 
   // Cache NOTAM data when it changes
   useEffect(() => {
+    if (!isInitialized) return;
     if (Object.keys(notamDataByIcao).length > 0) {
       setCachedNotamData({
         notamData: notamDataByIcao,
         timestamp: Date.now()
       });
     }
-  }, [notamDataByIcao]);
+  }, [notamDataByIcao, isInitialized]);
 
   // Start batching when queue changes
   useEffect(() => {
-    if (icaoQueue.length > 0 && !batchingActive && activeSession) {
+    if (isInitialized && icaoQueue.length > 0 && !batchingActive && activeSession) {
       startBatching();
     }
-  }, [icaoQueue.length, batchingActive, activeSession, startBatching]);
+  }, [isInitialized, icaoQueue, batchingActive, activeSession, startBatching]);
 
   if (!activeSession) {
     return null; // The session management hook will render the inactive message
