@@ -14,14 +14,13 @@ const NotamGrid = ({
   expandedCardKey,
   cardScale,
   onCardClick,
-  isNotamHighlighted
+  newNotamsByIcao
 }) => {
   
   const getFilteredNotams = () => {
     let allNotams = [];
     
     if (tabMode === "ALL") {
-      // Show all NOTAMs grouped by ICAO
       let icaoGroups = {};
       Object.entries(notamDataByIcao).forEach(([icao, notams]) => {
         if (Array.isArray(notams) && notams.length > 0) {
@@ -32,43 +31,30 @@ const NotamGrid = ({
       const sortedIcaos = Object.keys(icaoGroups).sort();
       
       sortedIcaos.forEach(icao => {
-        const notamsForIcao = [...icaoGroups[icao]];
-        
         const filteredNotamsForIcao = applyNotamFilters(
-          notamsForIcao, 
+          icaoGroups[icao], 
           filters, 
           keywordFilter
         );
         
         if (filteredNotamsForIcao.length > 0) {
           const sortedNotams = sortNotams(filteredNotamsForIcao, 'priority');
-          
-          // Add ICAO header
-          allNotams.push({ 
-            isIcaoHeader: true, 
-            icao,
-            count: filteredNotamsForIcao.length
-          });
-          
-          allNotams = [...allNotams, ...sortedNotams];
+          allNotams.push({ isIcaoHeader: true, icao, count: sortedNotams.length });
+          allNotams.push(...sortedNotams);
         }
       });
       
       return allNotams;
     } 
     else {
-      // Show NOTAMs for specific ICAO
-      const notams = notamDataByIcao[tabMode];
-      if (Array.isArray(notams)) {
-        const notamsWithIcao = notams.map(n => ({ ...n, icao: tabMode }));
-        const filtered = applyNotamFilters(notamsWithIcao, filters, keywordFilter);
-        return sortNotams(filtered, 'priority');
-      }
-      return [];
+      const notams = notamDataByIcao[tabMode] || [];
+      const notamsWithIcao = notams.map(n => ({ ...n, icao: tabMode }));
+      const filtered = applyNotamFilters(notamsWithIcao, filters, keywordFilter);
+      return sortNotams(filtered, 'priority');
     }
   };
 
-  const renderNotamCard = (notam, index) => {
+  const renderNotam = (notam, index) => {
     if (notam.isIcaoHeader) {
       return (
         <div 
@@ -77,11 +63,12 @@ const NotamGrid = ({
           style={{
             gridColumn: '1 / -1', 
             margin: '10px 0 5px 0',
+            padding: '0.75rem',
             background: 'rgba(30, 41, 59, 0.8)',
             borderBottom: '2px solid #0891b2'
           }}
         >
-          <h3 className="text-xl font-bold text-cyan-300 p-3">
+          <h3 className="text-xl font-bold text-cyan-300">
             {notam.icao} 
             <span className="text-base font-normal text-slate-300 ml-2">
               ({notam.count} NOTAMs)
@@ -91,22 +78,18 @@ const NotamGrid = ({
       );
     }
     
-    const key = (notam.id || notam.number || notam.qLine || notam.summary || "").replace(/[^a-zA-Z0-9_-]/g,'');
-    const cardKey = `${notam.icao}-${key}-${index}`;
-    const expanded = expandedCardKey === cardKey;
+    const key = notam.id || `${notam.number}-${index}`;
+    const cardKey = `${notam.icao}-${key}`;
     
-    // Check if this NOTAM should be highlighted
-    const isHighlighted = isNotamHighlighted ? isNotamHighlighted(notam.icao, notam) : false;
-
     return (
       <NotamCard
         key={cardKey}
         notam={notam}
         cardKey={cardKey}
-        expanded={expanded}
+        expanded={expandedCardKey === cardKey}
         cardScale={cardScale}
         onCardClick={onCardClick}
-        isHighlighted={isHighlighted}
+        newNotamsByIcao={newNotamsByIcao}
       />
     );
   };
@@ -116,22 +99,14 @@ const NotamGrid = ({
   return (
     <div id="result">
       {filteredNotams.length > 0 ? (
-        <div 
-          className="notam-grid"
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-            gap: '1rem',
-            marginTop: '1rem'
-          }}
-        >
-          {filteredNotams.map((notam, index) => renderNotamCard(notam, index))}
+        <div className="notam-grid">
+          {filteredNotams.map(renderNotam)}
         </div>
       ) : (
         <div className="glass p-8 rounded-lg text-center text-base text-slate-400">
           {Object.keys(notamDataByIcao).length === 0 
-            ? "Add some ICAO codes above to get started"
-            : "No NOTAMs found matching current filters"
+            ? "Add ICAO codes above to get started."
+            : "No NOTAMs found matching the current filters."
           }
         </div>
       )}
