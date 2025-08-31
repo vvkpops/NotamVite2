@@ -1,6 +1,3 @@
-// ========================================
-// src/components/NotificationSystem.jsx
-// ========================================
 import React from 'react';
 
 const NotificationSystem = ({
@@ -9,12 +6,10 @@ const NotificationSystem = ({
   showNotificationModal,
   setShowNotificationModal,
   setNotifications,
-  setNotificationCount,
   onNotificationClick
 }) => {
   const clearAllNotifications = () => {
     setNotifications([]);
-    setNotificationCount(0);
   };
 
   const toggleModal = () => {
@@ -58,7 +53,7 @@ const NotificationSystem = ({
           </div>
         </div>
 
-        <div style={{ maxHeight: '300px', overflowY: 'auto', padding: '0.5rem' }}>
+        <div className="scrollbar" style={{ maxHeight: '300px', overflowY: 'auto', padding: '0.5rem' }}>
           {notifications.length === 0 ? (
             <div className="text-center text-slate-400 py-4">
               No new notifications
