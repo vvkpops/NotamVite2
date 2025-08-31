@@ -12,8 +12,38 @@ const PORT = process.env.PORT || 3001;
 
 // --- Middleware ---
 
-// Security headers with Helmet
-app.use(helmet());
+// Security headers with a configured Content Security Policy (CSP)
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: [
+        "'self'", 
+        "https://cdn.tailwindcss.com", 
+        // Add hashes for any inline scripts if needed, or 'unsafe-inline' if they are dynamic.
+        // For the scripts in your index.html, using 'unsafe-inline' is simpler for now.
+        "'unsafe-inline'" 
+      ],
+      styleSrc: [
+        "'self'", 
+        "https://cdnjs.cloudflare.com", 
+        "https://fonts.googleapis.com", 
+        "'unsafe-inline'" // Needed for Font Awesome and some dynamic styles
+      ],
+      fontSrc: ["'self'", "https://cdnjs.cloudflare.com", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: [
+        "'self'", 
+        "https://plan.navcanada.ca",
+        // If you use Vercel analytics or similar, add its domain here
+        "https://vitals.vercel-insights.com" 
+      ],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  })
+);
+
 
 // CORS configuration
 const allowedOrigins = [
