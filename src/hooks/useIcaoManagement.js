@@ -11,6 +11,8 @@ export const useIcaoManagement = ({ showNotification }) => {
     setIsInitialized(true);
   }, []);
 
+  const stableShowNotification = useCallback(showNotification, []);
+
   const handleIcaoSubmit = useCallback((newIcaos) => {
     if (newIcaos.length === 0) return;
     setIcaoSet(prevIcaos => [...new Set([...prevIcaos, ...newIcaos])]);
@@ -24,23 +26,23 @@ export const useIcaoManagement = ({ showNotification }) => {
     if (!name.trim() || currentIcaos.length === 0) return;
     const newSet = { name: name.trim(), icaos: currentIcaos, created: new Date().toISOString() };
     setIcaoSets(prevSets => [...prevSets, newSet]);
-    showNotification(`ICAO Set "${name}" saved successfully!`);
-  }, [setIcaoSets, showNotification]);
+    stableShowNotification(`ICAO Set "${name}" saved successfully!`);
+  }, [setIcaoSets, stableShowNotification]);
 
   const handleLoadSet = useCallback((icaosToLoad) => {
     if (!icaosToLoad || icaosToLoad.length === 0) return;
     setIcaoSet(icaosToLoad);
     const setName = icaoSets.find(s => s.icaos === icaosToLoad)?.name || 'set';
-    showNotification(`Loaded ICAO set "${setName}"`);
-  }, [setIcaoSet, icaoSets, showNotification]);
+    stableShowNotification(`Loaded ICAO set "${setName}"`);
+  }, [setIcaoSet, icaoSets, stableShowNotification]);
 
   const handleDeleteSet = useCallback((indexToDelete) => {
     const setToDelete = icaoSets[indexToDelete];
     setIcaoSets(prevSets => prevSets.filter((_, index) => index !== indexToDelete));
     if (setToDelete) {
-      showNotification(`Deleted ICAO set "${setToDelete.name}"`);
+      stableShowNotification(`Deleted ICAO set "${setToDelete.name}"`);
     }
-  }, [icaoSets, setIcaoSets, showNotification]);
+  }, [icaoSets, setIcaoSets, stableShowNotification]);
 
   return {
     icaoSet,
